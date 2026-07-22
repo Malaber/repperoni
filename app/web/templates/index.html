@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111114" />
+    <meta name="description" content="Fast, friendly workout tracking with progress you can see." />
+    <title>{{ app_name }} · Lift. Log. Level up.</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/static/img/repperoni-mascot.png" />
+    <link rel="apple-touch-icon" href="/static/img/repperoni-mascot.png" />
+    <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}" />
+  </head>
+  <body class="app-body">
+    <div class="app-frame" data-app data-user-name="{{ user.display_name }}">
+      <header class="app-header">
+        <button class="brand" type="button" data-nav="dashboard" aria-label="Repperoni home">
+          <img src="/static/img/repperoni-mascot.png" alt="" />
+          <span><strong>Repperoni</strong><small>Lift. Log. Level up.</small></span>
+        </button>
+        <form method="post" action="/logout">
+          <button class="icon-button" type="submit" aria-label="Sign out" title="Sign out">↗</button>
+        </form>
+      </header>
+
+      <main class="app-main" aria-live="polite">
+        <section class="view" data-view="dashboard">
+          <div class="hero-copy">
+            <p class="eyebrow">Today's slice</p>
+            <h1>Ready to get <em>shredded</em>, {{ user.display_name }}?</h1>
+            <p>Fewer taps. More reps. Zero soggy logs.</p>
+          </div>
+          <div data-dashboard-content></div>
+        </section>
+
+        <section class="view" data-view="workout" hidden>
+          <div data-workout-content></div>
+        </section>
+
+        <section class="view" data-view="stats" hidden>
+          <div class="section-heading">
+            <div><p class="eyebrow">The receipts</p><h1>Progress</h1></div>
+            <select data-progress-exercise aria-label="Exercise for progress chart"></select>
+          </div>
+          <div data-stats-content></div>
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Primary">
+        <button class="is-active" type="button" data-nav="dashboard"><span>⌂</span>Home</button>
+        <button type="button" data-nav="workout"><span>＋</span>Workout</button>
+        <button type="button" data-nav="stats" data-testid="nav-stats"><span>↗</span>Progress</button>
+      </nav>
+
+      <dialog class="sheet" data-start-dialog>
+        <form method="dialog" data-start-form>
+          <button class="sheet-close" value="cancel" aria-label="Close">×</button>
+          <p class="eyebrow">Fresh out of the oven</p>
+          <h2>Start a workout</h2>
+          <label>Workout name
+            <input name="name" value="Gym session" maxlength="120" required data-testid="workout-name" />
+          </label>
+          <button class="primary-button" type="submit" data-testid="create-workout">Let's get this bread</button>
+        </form>
+      </dialog>
+
+      <dialog class="sheet" data-exercise-dialog>
+        <div class="sheet-panel">
+          <button class="sheet-close" type="button" data-close-exercises aria-label="Close">×</button>
+          <p class="eyebrow">Pick your station</p>
+          <h2>What's next?</h2>
+          <input type="search" placeholder="Search exercises" autocomplete="off" data-exercise-search data-testid="exercise-search" />
+          <div class="exercise-results" data-exercise-results></div>
+        </div>
+      </dialog>
+
+      <dialog class="sheet" data-edit-dialog>
+        <form method="dialog" data-edit-form>
+          <button class="sheet-close" value="cancel" aria-label="Close">×</button>
+          <p class="eyebrow">No shame, just gains</p>
+          <h2>Edit set</h2>
+          <label>Weight (kg)<input name="weight_kg" type="number" min="0" max="2000" step="0.25" required /></label>
+          <label>Reps<input name="reps" type="number" min="1" max="1000" step="1" required /></label>
+          <button class="primary-button" type="submit">Save correction</button>
+        </form>
+      </dialog>
+
+      <div class="toast" role="status" data-toast hidden></div>
+    </div>
+    <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
+  </body>
+</html>

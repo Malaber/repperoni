@@ -1,0 +1,12 @@
+{
+  "name": "Repperoni Workout Tracker",
+  "short_name": "Repperoni",
+  "description": "Lift. Log. Level up.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111114",
+  "theme_color": "#e1261c",
+  "icons": [
+    {"src": "/static/img/repperoni-mascot.png", "sizes": "any", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

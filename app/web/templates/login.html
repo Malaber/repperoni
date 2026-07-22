@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111114" />
+    <title>Welcome to {{ app_name }}</title>
+    <link rel="stylesheet" href="/api/v1/auth/assets/fastpasskey.css" />
+    <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}" />
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="login-brand">
+        <img src="/static/img/repperoni-mascot.png" alt="A strong pepperoni pizza lifting a barbell" />
+        <p class="eyebrow">Meet your new spotter</p>
+        <h1>Lift heavy.<br /><em>Log easy.</em></h1>
+        <p>Repperoni remembers the plates so your brain can focus on the reps.</p>
+      </section>
+
+      <section class="auth-card" data-passkey-auth data-next-url="{{ next_url }}">
+        <p class="auth-banner error-banner" data-auth-error hidden></p>
+        <p class="auth-banner success-banner" data-auth-success hidden></p>
+        <div class="auth-panels" data-auth-panels>
+          <div data-auth-tab-panel="signin" role="tabpanel" aria-labelledby="signin-tab">
+            <p class="eyebrow">Welcome back, champ</p>
+            <h2>Grab your passkey</h2>
+            <p>No passwords. No excuses.</p>
+            <form class="auth-form" data-passkey-login>
+              <button class="primary-button" type="button" data-passkey-login-button data-testid="passkey-login">Sign in with passkey</button>
+            </form>
+          </div>
+          <div data-auth-tab-panel="signup" role="tabpanel" aria-labelledby="signup-tab" hidden>
+            <p class="eyebrow">First slice is on us</p>
+            <h2>Create your account</h2>
+            <form class="auth-form" data-passkey-register>
+              <label>Your name<input type="text" name="display_name" autocomplete="name" required data-testid="signup-name" /></label>
+              <label>Email<input type="email" name="email" autocomplete="username webauthn" required data-testid="signup-email" /></label>
+              <button class="primary-button" type="submit" data-passkey-register-button data-testid="signup-submit">Create passkey</button>
+            </form>
+          </div>
+        </div>
+        <div class="auth-tabs" role="tablist" aria-label="Authentication">
+          <button id="signin-tab" type="button" data-auth-tab-trigger="signin" role="tab" aria-selected="true">Sign in</button>
+          <button id="signup-tab" type="button" data-auth-tab-trigger="signup" role="tab" aria-selected="false" data-testid="signup-tab">New here?</button>
+        </div>
+      </section>
+    </main>
+    <script type="module">
+      import { initFastPasskey } from "/api/v1/auth/assets/fastpasskey.js";
+      initFastPasskey({ translate: (_key, _values, fallback) => fallback });
+    </script>
+  </body>
+</html>
