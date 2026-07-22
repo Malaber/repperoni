@@ -70,6 +70,7 @@ def test_exercise_catalog_search_and_custom_exercises(client):
 def test_complete_workout_and_previous_performance(client):
     exercise = first_exercise(client)
     workout = start_workout(client)
+    assert workout["started_at"].endswith("Z")
     assert client.post("/api/v1/workouts", json={"name": "Duplicate"}).status_code == 409
     workout = add_station(client, workout, exercise)
     station = workout["stations"][0]
@@ -88,6 +89,7 @@ def test_complete_workout_and_previous_performance(client):
     )
     assert first.status_code == 201
     assert first.json()["set_number"] == 1
+    assert first.json()["completed_at"].endswith("Z")
     retried = client.post(
         set_url,
         json={"weight_kg": "80.50", "reps": 8, "client_mutation_id": mutation_id},
@@ -109,6 +111,7 @@ def test_complete_workout_and_previous_performance(client):
     finished = client.post(f"/api/v1/workouts/{workout['id']}/finish")
     assert finished.status_code == 200
     assert finished.json()["total_volume_kg"] == "577.50"
+    assert finished.json()["completed_at"].endswith("Z")
     assert client.post(f"/api/v1/workouts/{workout['id']}/finish").status_code == 409
 
     next_workout = add_station(client, start_workout(client, "Round two"), exercise)

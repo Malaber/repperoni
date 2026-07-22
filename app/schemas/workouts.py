@@ -1,8 +1,18 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+UTCDateTime = Annotated[datetime, AfterValidator(_ensure_utc)]
 
 
 class ExerciseCreate(BaseModel):
@@ -23,7 +33,7 @@ class ExerciseOut(BaseModel):
 class PerformanceOut(BaseModel):
     weight_kg: Decimal
     reps: int
-    completed_at: datetime
+    completed_at: UTCDateTime
     estimated_one_rep_max: Decimal
 
 
@@ -53,7 +63,7 @@ class SetOut(BaseModel):
     weight_kg: Decimal
     reps: int
     rpe: Decimal | None
-    completed_at: datetime
+    completed_at: UTCDateTime
     client_mutation_id: str | None
 
 
@@ -64,7 +74,7 @@ class StationCreate(BaseModel):
 class StationOut(BaseModel):
     id: UUID
     position: int
-    started_at: datetime
+    started_at: UTCDateTime
     exercise: ExerciseOut
     sets: list[SetOut]
     previous_performance: PerformanceOut | None
@@ -79,8 +89,8 @@ class WorkoutOut(BaseModel):
     id: UUID
     name: str
     notes: str | None
-    started_at: datetime
-    completed_at: datetime | None
+    started_at: UTCDateTime
+    completed_at: UTCDateTime | None
     stations: list[StationOut]
     total_sets: int
     total_volume_kg: Decimal
@@ -89,8 +99,8 @@ class WorkoutOut(BaseModel):
 class WorkoutSummaryOut(BaseModel):
     id: UUID
     name: str
-    started_at: datetime
-    completed_at: datetime | None
+    started_at: UTCDateTime
+    completed_at: UTCDateTime | None
     exercise_count: int
     total_sets: int
     total_volume_kg: Decimal
