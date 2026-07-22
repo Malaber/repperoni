@@ -1,6 +1,7 @@
 import {
   adjustNumericValue,
   chartPoints,
+  dayLabel,
   escapeHtml,
   estimateOneRepMax,
   formatWeight,
@@ -133,9 +134,9 @@ function renderStats(progress = null) {
     <article class="stat-card"><span>Workouts</span><strong data-testid="stats-workout-count">${state.stats.workout_count}</strong></article>
     <article class="stat-card"><span>Sets</span><strong>${state.stats.total_sets}</strong></article>
     <article class="stat-card"><span>Volume</span><strong>${formatWeight(state.stats.total_volume_kg)} kg</strong></article>
-    <article class="stat-card"><span>Streak</span><strong>${state.stats.current_streak} days</strong></article></div>
-    <section class="card chart-card"><p class="eyebrow">${progress ? `${escapeHtml(progress.exercise.name)} · estimated 1RM` : "Training volume"}</p><h2>${values.length ? "Up and to the right" : "Your curve starts here"}</h2>
-      ${values.length ? `<svg class="progress-chart" viewBox="0 0 600 180" role="img" aria-label="${progress ? "Estimated one rep max progress" : "Training volume over time"}" data-testid="progress-chart"><defs><linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#e1261c" stop-opacity=".32"/><stop offset="1" stop-color="#e1261c" stop-opacity="0"/></linearGradient></defs><path class="grid" d="M12 48H588M12 96H588M12 144H588"/><polygon class="area" points="12,168 ${points} 588,168"/><polyline class="line" points="${points}"/>${circles}</svg>` : '<div class="empty-state"><p>Log a few sets and Repperoni will draw the gains.</p></div>'}</section>
+    <article class="stat-card"><span>Streak</span><strong>${dayLabel(state.stats.current_streak)}</strong></article></div>
+    <section class="card chart-card"><p class="eyebrow">${progress ? `${escapeHtml(progress.exercise.name)} · estimated 1RM` : "Training volume"}</p><h2>${values.length > 1 ? "Up and to the right" : values.length ? "First point on the board" : "Your curve starts here"}</h2>
+      ${values.length ? `<svg class="progress-chart" viewBox="0 0 600 180" role="img" aria-label="${progress ? "Estimated one rep max progress" : "Training volume over time"}" data-testid="progress-chart"><defs><linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#e1261c" stop-opacity=".32"/><stop offset="1" stop-color="#e1261c" stop-opacity="0"/></linearGradient></defs><path class="grid" d="M12 48H588M12 96H588M12 144H588"/>${values.length > 1 ? `<polygon class="area" points="12,168 ${points} 588,168"/>` : ""}<polyline class="line" points="${points}"/>${circles}</svg>` : '<div class="empty-state"><p>Log a few sets and Repperoni will draw the gains.</p></div>'}</section>
     <section class="card chart-card"><p class="eyebrow">Personal records</p><div class="pr-list">${state.stats.personal_records.length ? state.stats.personal_records.map((record) => `<div class="pr-row"><span><strong>${escapeHtml(record.exercise_name)}</strong><small class="muted">${formatWeight(record.weight_kg)} kg × ${record.reps}</small></span><strong>${formatWeight(record.estimated_one_rep_max)} kg e1RM</strong></div>`).join("") : '<p class="muted">PR pizza is still in the oven.</p>'}</div></section>`;
 }
 
@@ -256,4 +257,4 @@ async function initialize() {
 
 if (typeof document !== "undefined" && document.querySelector("[data-app]")) initialize().catch(handleError);
 
-export {adjustNumericValue, chartPoints, escapeHtml, estimateOneRepMax, formatWeight, parseApiError};
+export {adjustNumericValue, chartPoints, dayLabel, escapeHtml, estimateOneRepMax, formatWeight, parseApiError};

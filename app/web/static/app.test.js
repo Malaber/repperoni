@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {adjustNumericValue, chartPoints, chartScale, escapeHtml, estimateOneRepMax, formatWeight, parseApiError} from "./helpers.js";
+import {adjustNumericValue, chartPoints, chartScale, dayLabel, escapeHtml, estimateOneRepMax, formatWeight, parseApiError} from "./helpers.js";
 
 test("formats gym weights without noisy zeros", () => {
   assert.equal(formatWeight(80), "80");
@@ -26,9 +26,14 @@ test("builds chart scales and points", () => {
   assert.equal(y(0), 90);
   assert.equal(y(10), 10);
   assert.equal(chartPoints([], 100, 100), "");
-  assert.equal(chartPoints([5], 100, 100, 10), "10,10");
+  assert.equal(chartPoints([5], 100, 100, 10), "50,10");
   assert.equal(chartPoints([0, 10], 100, 100, 10), "10,90 90,10");
   assert.match(chartPoints([0, 10]), /^12,/);
+});
+
+test("pluralizes streak days", () => {
+  assert.equal(dayLabel(1), "1 day");
+  assert.equal(dayLabel(2), "2 days");
 });
 
 test("escapes untrusted exercise names", () => {

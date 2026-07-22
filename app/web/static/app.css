@@ -74,8 +74,8 @@ em { color: var(--cheese); font-style: normal; }
 .set-entry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 12px; }
 .number-control { background: var(--panel); border-radius: 18px; padding: 12px; text-align: center; }
 .number-control label { color: var(--muted); display: block; font-size: .76rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
-.number-row { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; margin-top: 5px; }
-.number-row button { width: 42px; height: 42px; border-radius: 12px; border: 0; color: var(--cream); background: var(--panel-light); font-size: 1.4rem; }
+.number-row { display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; margin-top: 5px; }
+.number-row button { width: 48px; height: 48px; border-radius: 12px; border: 0; color: var(--cream); background: var(--panel-light); font-size: 1.4rem; }
 .number-row input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--cream); text-align: center; font-size: clamp(1.45rem, 6vw, 2.2rem); font-weight: 850; font-variant-numeric: tabular-nums; }
 .entry-actions { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 10px; }
 .sets-list { margin-top: 24px; }

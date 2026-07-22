@@ -35,10 +35,16 @@ function chartScale(values, height = 160, padding = 12) {
 function chartPoints(values, width = 600, height = 160, padding = 12) {
   if (!values.length) return "";
   const y = chartScale(values, height, padding);
-  const step = values.length === 1 ? 0 : (width - padding * 2) / (values.length - 1);
+  if (values.length === 1) return `${width / 2},${y(values[0])}`;
+  const step = (width - padding * 2) / (values.length - 1);
   return values
     .map((value, index) => `${padding + index * step},${y(value)}`)
     .join(" ");
+}
+
+function dayLabel(value) {
+  const days = Number(value);
+  return `${days} ${days === 1 ? "day" : "days"}`;
 }
 
 function escapeHtml(value) {
@@ -65,6 +71,7 @@ export {
   adjustNumericValue,
   chartPoints,
   chartScale,
+  dayLabel,
   escapeHtml,
   estimateOneRepMax,
   formatWeight,
