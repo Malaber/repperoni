@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.tmp
+node_modules
+test-results
+playwright-report
+*.db
+*.db-shm
+*.db-wal
+__pycache__
+.coverage
+htmlcov

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+find_shared_venv() {
+  while read -r line; do
+    [[ "$line" == worktree\ * ]] || continue
+    worktree_path="${line#worktree }"
+    [[ "$worktree_path" == "$ROOT" ]] && continue
+    if [[ -x "$worktree_path/.venv/bin/inv" ]]; then
+      printf '%s\n' "$worktree_path/.venv"
+      return 0
+    fi
+  done < <(git -C "$ROOT" worktree list --porcelain)
+  return 1
+}
+
+if [[ -x "$ROOT/.venv/bin/inv" ]]; then
+  "$ROOT/.venv/bin/python" --version
+  exit 0
+fi
+
+if [[ -L "$ROOT/.venv" && ! -e "$ROOT/.venv" ]]; then
+  rm "$ROOT/.venv"
+fi
+
+if [[ ! -e "$ROOT/.venv" ]] && shared_venv="$(find_shared_venv)"; then
+  ln -s "$shared_venv" "$ROOT/.venv"
+  echo "Linked worktree .venv -> $shared_venv"
+  "$ROOT/.venv/bin/python" --version
+  exit 0
+fi
+
+bash "$ROOT/scripts/setup_env.sh"
