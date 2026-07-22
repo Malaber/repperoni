@@ -1,0 +1,45 @@
+project_id: repperoni-production
+
+github:
+  owner: Malaber
+  repo: repperoni
+  token_env: GITHUB_TOKEN
+  webhook_secret_env: GITHUB_WEBHOOK_SECRET
+  required_event_types: [push, ping]
+
+deployment:
+  mode: production
+  compose_file: /srv/repperoni/deploy/compose.production.yml
+  compose_bin: docker
+  working_directory: /srv/repperoni/deploy
+  project_name_prefix: repperoni-
+  production_project_name: repperoni
+  production_hostname: repperoni.malaber.de
+
+image:
+  registry: ghcr.io
+  repository: malaber/repperoni
+  tag_template: sha-{sha}
+  production_tag_template: sha-{sha}
+
+production:
+  branch: main
+  data_dir: /srv/repperoni/data/production
+  sqlite_path: /srv/repperoni/data/production/repperoni.db
+  backup_dir: /srv/repperoni/data/backups
+  backup_keep: 3
+
+reconcile:
+  poll_interval_seconds: 60
+  cleanup_closed_prs: false
+  redeploy_on_sha_change: true
+
+traefik:
+  enable_labels: true
+  certresolver: letsencrypt
+
+state:
+  state_file: /srv/repperoni/webhooker/runtime/state/repperoni-production.json
+
+wake:
+  wake_file: /srv/repperoni/webhooker/runtime/wake/repperoni-production
