@@ -17,6 +17,7 @@ TMP = ROOT / ".tmp"
 PID_FILE = TMP / "repperoni.pid"
 LOG_FILE = TMP / "repperoni.log"
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+MACOS_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 
 def _bin(name: str) -> str:
@@ -30,6 +31,15 @@ def _clean_install_env() -> dict[str, str]:
         if environment.get(name) and not Path(environment[name]).exists():
             environment.pop(name)
     return environment
+
+
+def _playwright_channel() -> str | None:
+    configured = os.environ.get("PLAYWRIGHT_CHANNEL")
+    if configured:
+        return configured
+    if sys.platform == "darwin" and MACOS_CHROME.exists():
+        return "chrome"
+    return None
 
 
 def _git_lines(*args: str) -> list[str]:
@@ -189,6 +199,9 @@ def check_js(c):
 
 @task
 def install_browser(c):
+    if channel := _playwright_channel():
+        print(f"Using installed Playwright browser channel: {channel}")
+        return
     c.run("npx playwright install chromium")
 
 
@@ -250,9 +263,13 @@ def stop_app(_):
 
 @task
 def run_browser_e2e(c, base_url="http://localhost:8000", device="all"):
+    environment = {"REPPERONI_PYTHON": sys.executable}
+    if channel := _playwright_channel():
+        environment["PLAYWRIGHT_CHANNEL"] = channel
     c.run(
         "node scripts/run_ui_e2e.mjs "
-        f"--base-url={shlex.quote(base_url)} --device={shlex.quote(device)}"
+        f"--base-url={shlex.quote(base_url)} --device={shlex.quote(device)}",
+        env=environment,
     )
 
 

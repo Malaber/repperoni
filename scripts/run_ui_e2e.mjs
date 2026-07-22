@@ -18,7 +18,7 @@ const resultsDirectory = path.resolve("test-results");
 
 
 function fastPasskeyHelper() {
-  const python = path.resolve(".venv/bin/python");
+  const python = process.env.REPPERONI_PYTHON || path.resolve(".venv/bin/python");
   return execFileSync(
     python,
     ["-c", "from importlib.resources import files; print(files('fastpasskey').joinpath('testing/playwright.mjs'))"],
@@ -28,10 +28,17 @@ function fastPasskeyHelper() {
 
 
 async function expectText(page, selector, text) {
-  const locator = page.locator(selector);
-  await locator.waitFor({state: "visible"});
-  const content = await locator.textContent();
-  if (!String(content).includes(text)) throw new Error(`Expected ${selector} to contain ${text}; got ${content}`);
+  try {
+    await page.waitForFunction(
+      ({selector, text}) => [...document.querySelectorAll(selector)].some(
+        (node) => node.getClientRects().length > 0 && String(node.textContent).includes(text),
+      ),
+      {selector, text},
+    );
+  } catch (error) {
+    const content = await page.locator(selector).allTextContents();
+    throw new Error(`Expected ${selector} to contain ${text}; got ${content.join(" | ")}`, {cause: error});
+  }
 }
 
 
@@ -53,7 +60,14 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("console", (message) => {
+    if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+      errors.push(message.text());
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
+  });
   const authenticator = await createVirtualAuthenticator(context, page);
   const suffix = `${device}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -64,7 +78,7 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.getByTestId("signup-email").fill(`e2e-${suffix}@example.com`);
     await page.getByTestId("signup-submit").click();
     await page.waitForURL(`${baseUrl}/`);
-    await expectText(page, "h1", "shredded");
+    await expectText(page, '[data-view="dashboard"] h1', "shredded");
 
     await page.getByRole("button", {name: "Sign out"}).click();
     await page.waitForURL(/\/login/);
@@ -74,7 +88,8 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.getByTestId("start-workout").click();
     await page.getByTestId("workout-name").fill("Pepper Push");
     await page.getByTestId("create-workout").click();
-    await expectText(page, "h1", "Pepper Push");
+    await expectText(page, ".workout-heading h1", "Pepper Push");
+    await expectText(page, "[data-workout-timer]", "00:");
     await page.getByRole("button", {name: /Station/}).click();
     await page.getByTestId("exercise-search").fill("Bench Press");
     await page.locator("[data-add-exercise]").first().click();
@@ -89,6 +104,24 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.locator("[data-edit-form] [name=reps]").fill("9");
     await page.getByRole("button", {name: "Save correction"}).click();
     await expectText(page, '[data-testid="set-row"]', "62.5 kg × 9");
+    if (mobile) {
+      const layout = await page.evaluate(() => {
+        const target = document.querySelector('[data-testid="weight-step"]')?.getBoundingClientRect();
+        return {
+          viewportWidth: window.innerWidth,
+          contentWidth: document.documentElement.scrollWidth,
+          targetWidth: target?.width || 0,
+          targetHeight: target?.height || 0,
+        };
+      });
+      if (layout.contentWidth > layout.viewportWidth + 1) {
+        throw new Error(`Mobile layout overflows by ${layout.contentWidth - layout.viewportWidth}px`);
+      }
+      if (Math.min(layout.targetWidth, layout.targetHeight) < 44) {
+        throw new Error(`Weight step target is too small: ${layout.targetWidth}x${layout.targetHeight}`);
+      }
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({path: path.join(resultsDirectory, `${device}-workout.png`), fullPage: true});
     await finishWorkout(page);
     await expectText(page, "[data-dashboard-content]", "Pepper Push");
@@ -125,6 +158,9 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.getByTestId("progress-chart").waitFor({state: "visible"});
     await expectText(page, "[data-stats-content]", "Bench Press");
     await expectText(page, "[data-stats-content]", "62.5 kg × 9");
+    await expectText(page, "[data-stats-content]", "1 day");
+    await expectText(page, "[data-stats-content]", "First point on the board");
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({path: path.join(resultsDirectory, `${device}-progress.png`), fullPage: true});
   } catch (error) {
     await page.screenshot({path: path.join(resultsDirectory, `${device}-failure.png`), fullPage: true}).catch(() => {});
@@ -140,8 +176,11 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
 
 async function main() {
   await mkdir(resultsDirectory, {recursive: true});
-  const helper = await import(pathToFileURL(fastPassKeyHelper()).href);
-  const browser = await chromium.launch({headless: true});
+  const helper = await import(pathToFileURL(fastPasskeyHelper()).href);
+  const browser = await chromium.launch({
+    headless: true,
+    channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
+  });
   const completed = [];
   try {
     for (const device of devices) {

@@ -5,7 +5,7 @@
 - Black and Flake8
 - Python service/API/migration tests with branch coverage
 - JavaScript unit tests and coverage
-- Chromium installation
+- a matching Playwright Chromium (or the installed Chrome channel on macOS)
 - the full real-browser flow at desktop and phone sizes
 
 Browser tests use Chromium's virtual WebAuthn authenticator through the helper shipped with
