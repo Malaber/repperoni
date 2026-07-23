@@ -1,4 +1,6 @@
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from secrets import compare_digest
 from unicodedata import normalize
 from uuid import UUID
@@ -13,7 +15,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import RegistrationMode, settings
 from app.core.database import get_db
 from app.core.security import create_access_token, decode_access_token
-from app.models import Passkey, User
+from app.models import Passkey, PasskeyCeremonyClaim, User
 from app.services.auth_sessions import (
     create_auth_session,
     revoke_auth_session,
@@ -28,6 +30,12 @@ REGISTRATION_ROUTE_SUFFIXES = frozenset(
     }
 )
 REGISTRATION_BOOTSTRAP_HEADER = "X-Repperoni-Registration-Token"
+VERIFY_ROUTE_SESSION_KEYS = {
+    "/auth/register/verify": "passkey_register",
+    "/auth/login/verify": "passkey_login",
+    "/auth/passkeys/{passkey_id}/rename/verify": "passkey_rename",
+    "/auth/passkeys/{passkey_id}/delete/verify": "passkey_delete",
+}
 
 
 class RegistrationUnavailableError(Exception):
@@ -77,6 +85,30 @@ class RepperoniPasskeyRepository:
         self.db = db
         self.registration_mode = registration_mode or settings.registration_mode
         self.auth_session_id: UUID | None = None
+
+    async def claim_passkey_ceremony(self, state: Mapping[str, object]) -> None:
+        """Atomically make a signed browser ceremony state single use."""
+        challenge = state.get("challenge")
+        if not isinstance(challenge, str) or not challenge:
+            return
+        now = datetime.now(UTC)
+        await self.db.execute(
+            delete(PasskeyCeremonyClaim).where(PasskeyCeremonyClaim.expires_at <= now)
+        )
+        self.db.add(
+            PasskeyCeremonyClaim(
+                challenge_digest=sha256(challenge.encode()).digest(),
+                expires_at=now + timedelta(seconds=settings.auth_flow_expire_seconds),
+            )
+        )
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Passkey ceremony was already used",
+            ) from exc
 
     async def ensure_registration_allowed(self) -> None:
         if self.registration_mode == "open":
@@ -255,4 +287,11 @@ async def get_passkey_repository(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail=str(exc),
                     ) from exc
+    session_key = next(
+        (key for suffix, key in VERIFY_ROUTE_SESSION_KEYS.items() if route_path.endswith(suffix)),
+        None,
+    )
+    state = request.session.get(session_key) if session_key else None
+    if isinstance(state, Mapping):
+        await repository.claim_passkey_ceremony(state)
     return repository

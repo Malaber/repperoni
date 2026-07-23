@@ -147,3 +147,32 @@ def test_workout_integrity_migration_repairs_and_constrains_rows(tmp_path, monke
                     "2026-01-02 10:03:00",
                 ),
             )
+
+
+def test_passkey_ceremony_claim_migration_enforces_single_use(tmp_path, monkeypatch):
+    database = tmp_path / "passkey-ceremony-claims.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{database}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0003_workout_integrity")
+    command.upgrade(config, "head")
+
+    digest = b"x" * 32
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO passkey_ceremony_claims
+                (challenge_digest, expires_at)
+            VALUES (?, ?)
+            """,
+            (digest, "2026-01-01 10:00:00"),
+        )
+        connection.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO passkey_ceremony_claims
+                    (challenge_digest, expires_at)
+                VALUES (?, ?)
+                """,
+                (digest, "2026-01-01 10:00:00"),
+            )

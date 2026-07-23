@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -25,7 +26,9 @@ from app.services.auth_sessions import (
 )
 from app.services.passkey_repository import (
     REGISTRATION_BOOTSTRAP_HEADER,
+    VERIFY_ROUTE_SESSION_KEYS,
     RepperoniPasskeyRepository,
+    get_passkey_repository,
     normalize_registration_display_name,
     normalize_registration_email,
 )
@@ -272,6 +275,25 @@ def test_passkey_options_endpoint_uses_shared_module(client):
     login = client.post("/api/v1/auth/login/options", json={})
     assert login.status_code == 200
     assert "challenge" in login.json()
+
+
+def test_passkey_verification_ceremonies_are_single_use():
+    async def scenario():
+        route_path = "/api/v1/auth/login/verify"
+        session_key = VERIFY_ROUTE_SESSION_KEYS["/auth/login/verify"]
+        state = {"challenge": f"challenge-{uuid.uuid4()}"}
+        request = request_with_session({session_key: state})
+        request.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            await get_passkey_repository(request, db)
+        replay = request_with_session({session_key: state})
+        replay.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            with pytest.raises(HTTPException, match="already used") as captured:
+                await get_passkey_repository(replay, db)
+            assert captured.value.status_code == 400
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("registration_mode", ["closed", "first-user"])
