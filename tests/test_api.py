@@ -34,6 +34,11 @@ def test_health_and_auth_guards(client):
     app.dependency_overrides.clear()
     health = client.get("/health")
     assert health.json() == {"status": "ok"}
+    assert client.get("/health/version").json() == {
+        "status": "ok",
+        "version": "dev",
+        "revision": "unknown",
+    }
     assert health.headers["x-content-type-options"] == "nosniff"
     assert health.headers["x-frame-options"] == "DENY"
     assert "frame-ancestors 'none'" in health.headers["content-security-policy"]

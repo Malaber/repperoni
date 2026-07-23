@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Repperoni"
+    app_version: str = Field(default="dev", min_length=1, max_length=64)
+    app_revision: str = Field(
+        default="unknown",
+        pattern=r"^(?:unknown|[0-9a-f]{40})$",
+    )
     environment: Literal["development", "test", "review", "production"] = "development"
     registration_mode: RegistrationMode = "first-user"
     app_base_url: str | None = None

@@ -33,7 +33,7 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        version="1.0.0",
+        version=settings.app_version,
         lifespan=lifespan,
         docs_url=None if settings.deployed else "/docs",
         redoc_url=None if settings.deployed else "/redoc",
@@ -75,6 +75,14 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/version", tags=["system"])
+    async def health_version() -> dict[str, str]:
+        return {
+            "status": "ok",
+            "version": settings.app_version,
+            "revision": settings.app_revision,
+        }
 
     return app
 
