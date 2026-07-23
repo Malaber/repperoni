@@ -123,6 +123,19 @@ def _stop_process() -> None:
     PID_FILE.unlink(missing_ok=True)
 
 
+def _uvicorn_command(port: int) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+
+
 def _wait_for_url(url: str, timeout: float = 30) -> None:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
@@ -232,14 +245,7 @@ def start_app(c, port=8000, e2e=False):
         environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database}"
     log = LOG_FILE.open("w", encoding="utf-8")
     process = subprocess.Popen(
-        [
-            str(ROOT / ".venv" / "bin" / "uvicorn"),
-            "app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
+        _uvicorn_command(port),
         cwd=ROOT,
         env=environment,
         stdout=log,

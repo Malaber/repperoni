@@ -1,4 +1,6 @@
-from tasks import _latest_stable_version, _version_values
+import sys
+
+from tasks import _latest_stable_version, _uvicorn_command, _version_values
 
 
 def test_versioning_ignores_non_release_tags():
@@ -14,3 +16,17 @@ def test_branch_versions_avoid_existing_rc_tags():
         "release_version": "0.1.1-rc.6",
         "git_tag": "v0.1.1-rc.6",
     }
+
+
+def test_uvicorn_command_uses_invoking_python():
+    command = _uvicorn_command(8123)
+    assert command == [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8123",
+    ]
