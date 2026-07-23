@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from secrets import compare_digest
 from unicodedata import normalize
 from uuid import UUID
 
@@ -22,6 +23,7 @@ REGISTRATION_ROUTE_SUFFIXES = frozenset(
         "/auth/register/verify",
     }
 )
+REGISTRATION_BOOTSTRAP_HEADER = "X-Repperoni-Registration-Token"
 
 
 class RegistrationUnavailableError(Exception):
@@ -203,6 +205,17 @@ async def get_passkey_repository(
     route = request.scope.get("route")
     route_path = getattr(route, "path", request.url.path)
     if any(route_path.endswith(suffix) for suffix in REGISTRATION_ROUTE_SUFFIXES):
+        configured_token = settings.registration_bootstrap_token
+        if settings.registration_mode == "first-user" and configured_token is not None:
+            supplied_token = request.headers.get(REGISTRATION_BOOTSTRAP_HEADER, "")
+            if not compare_digest(
+                supplied_token,
+                configured_token.get_secret_value(),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Registration is not available",
+                )
         try:
             await repository.ensure_registration_allowed()
         except RegistrationUnavailableError as exc:

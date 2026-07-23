@@ -55,7 +55,16 @@ async def login(request: Request, user: User | None = Depends(get_optional_curre
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"app_name": settings.app_name, "asset_version": asset_version(), "next_url": next_url},
+        {
+            "app_name": settings.app_name,
+            "asset_version": asset_version(),
+            "next_url": next_url,
+            "registration_open": settings.registration_mode != "closed",
+            "registration_token_required": (
+                settings.registration_mode == "first-user"
+                and settings.registration_bootstrap_token is not None
+            ),
+        },
     )
 
 

@@ -1,6 +1,8 @@
 import asyncio
 import uuid
 
+from pydantic import SecretStr
+
 from app.api.deps import get_current_user, get_optional_current_user
 from app.core.config import settings
 from app.core.security import create_access_token
@@ -71,6 +73,19 @@ def test_authenticated_web_shell_and_public_assets(client, user):
     association = client.get("/.well-known/apple-app-site-association")
     assert association.json()["webcredentials"]["apps"] == ["TEAM.de.malaber.repperoni"]
     settings.webcredentials_apps = []
+
+
+def test_registration_ui_follows_bootstrap_policy(client, monkeypatch):
+    app.dependency_overrides[get_optional_current_user] = lambda: None
+
+    monkeypatch.setattr(settings, "registration_mode", "closed")
+    assert 'data-testid="signup-tab"' not in client.get("/login").text
+
+    monkeypatch.setattr(settings, "registration_mode", "first-user")
+    monkeypatch.setattr(settings, "registration_bootstrap_token", SecretStr("b" * 32))
+    login = client.get("/login")
+    assert 'data-testid="signup-tab"' in login.text
+    assert "data-registration-bootstrap-token" in login.text
 
 
 def test_request_origin_and_body_size_are_enforced(client, user):

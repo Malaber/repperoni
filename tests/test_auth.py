@@ -6,7 +6,7 @@ import pytest
 from fastpasskey import PasskeyConflictError, PasskeyCredential
 from fastapi import HTTPException
 from jose import jwt
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from starlette.requests import Request
@@ -19,6 +19,7 @@ from app.core.security import TOKEN_ALGORITHM, TOKEN_AUDIENCE, TOKEN_ISSUER, cre
 from app.models import AuthSession, Passkey, User
 from app.services.auth_sessions import SESSION_KEY, get_session_user, revoke_auth_session
 from app.services.passkey_repository import (
+    REGISTRATION_BOOTSTRAP_HEADER,
     RepperoniPasskeyRepository,
     normalize_registration_display_name,
     normalize_registration_email,
@@ -302,6 +303,47 @@ def test_registration_options_reject_unbounded_identity(client):
     assert email.status_code == 422
 
 
+def test_first_user_api_requires_bootstrap_token(client, monkeypatch):
+    async def allow_empty_database(_):
+        return None
+
+    monkeypatch.setattr(settings, "registration_mode", "first-user")
+    monkeypatch.setattr(settings, "registration_bootstrap_token", SecretStr("b" * 32))
+    monkeypatch.setattr(
+        RepperoniPasskeyRepository,
+        "ensure_registration_allowed",
+        allow_empty_database,
+    )
+    payload = {
+        "email": f"{uuid.uuid4()}@example.com",
+        "display_name": "Pepper Owner",
+    }
+
+    assert client.post("/api/v1/auth/register/options", json=payload).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/auth/register/options",
+            json=payload,
+            headers={REGISTRATION_BOOTSTRAP_HEADER: "wrong"},
+        ).status_code
+        == 403
+    )
+    allowed = client.post(
+        "/api/v1/auth/register/options",
+        json=payload,
+        headers={REGISTRATION_BOOTSTRAP_HEADER: "b" * 32},
+    )
+    assert allowed.status_code == 200
+
+    assert client.post("/api/v1/auth/register/verify", json={"credential": {}}).status_code == 403
+    passed_gate = client.post(
+        "/api/v1/auth/register/verify",
+        json={"credential": {}},
+        headers={REGISTRATION_BOOTSTRAP_HEADER: "b" * 32},
+    )
+    assert passed_gate.status_code != 403
+
+
 def test_unprotected_passkey_enrollment_routes_are_not_exposed(client):
     exposed_paths = {route.path for route in passkey_router().routes}
     assert exposed_paths == SAFE_ROUTE_PATHS
@@ -370,6 +412,8 @@ def test_registration_mode_defaults_to_first_user(monkeypatch):
         {"app_base_url": "http://repperoni.example"},
         {"app_base_url": None},
         {"webauthn_rp_id": None},
+        {"registration_bootstrap_token": None},
+        {"registration_bootstrap_token": "short"},
     ],
 )
 def test_deployed_settings_fail_closed(override):
@@ -380,6 +424,8 @@ def test_deployed_settings_fail_closed(override):
         "secret_key": "s" * 32,
         "secure_cookies": True,
         "webauthn_rp_id": "repperoni.example",
+        "registration_mode": "first-user",
+        "registration_bootstrap_token": "b" * 32,
     }
     values.update(override)
     with pytest.raises(ValidationError):
@@ -394,6 +440,7 @@ def test_deployed_settings_lock_cookie_host_and_origin():
         secret_key="s" * 32,
         secure_cookies=True,
         webauthn_rp_id="pr.repperoni.example",
+        registration_mode="open",
         cors_origins="https://native.example",
     )
     assert configured.deployed is True

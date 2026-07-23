@@ -1,7 +1,7 @@
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     )
     environment: Literal["development", "test", "review", "production"] = "development"
     registration_mode: RegistrationMode = "first-user"
+    registration_bootstrap_token: SecretStr | None = None
     app_base_url: str | None = None
     database_url: str = "sqlite+aiosqlite:///./repperoni.db"
     secret_key: str = PLACEHOLDER_SECRET
@@ -117,6 +118,13 @@ class Settings(BaseSettings):
                 raise ValueError("deployed environments require a 32-character secret key")
             if not self.webauthn_rp_id:
                 raise ValueError("deployed environments require webauthn_rp_id")
+            if self.registration_mode == "first-user" and (
+                self.registration_bootstrap_token is None
+                or len(self.registration_bootstrap_token.get_secret_value()) < 32
+            ):
+                raise ValueError(
+                    "deployed first-user registration requires a 32-character bootstrap token"
+                )
         return self
 
     @property

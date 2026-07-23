@@ -19,6 +19,7 @@ def test_webhooker_configs_isolate_review_data():
     assert "pr.repperoni.malaber.de" not in review
     assert "tag_template: sha-{sha}" in review
     assert "production_hostname: repperoni.malaber.de" in production
+    assert "REGISTRATION_MODE=closed" in read("deploy/webhooker/env/production.common.env")
     assert "system_traefik_reviews_external" in review_compose
     assert "system_traefik_external" not in review_compose.replace(
         "system_traefik_reviews_external", ""

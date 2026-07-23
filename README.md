@@ -65,8 +65,8 @@ CI tests Python, JavaScript, desktop, and phone flows before publishing the immu
 `sha-<full-sha>` multi-architecture image. PR review apps are isolated at
 `https://pr-<number>.repperoni-review.malaber.de`; production is
 `https://repperoni.malaber.de`. Releases promote the already-tested image rather than rebuilding
-it. Production registration defaults to `first-user`: one account may bootstrap an empty
-database, then registration closes automatically. See
+it. Production registration is closed by default; the documented secret-gated bootstrap opens
+it only long enough to create the first owner. See
 [Webhooker deployment](docs/deployment/webhooker.md).
 
 ## Project layout
