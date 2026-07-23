@@ -46,7 +46,7 @@ jobs:
           [[ "$(git rev-parse origin/main)" == "$REVISION" ]]
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with: {python-version: '3.14'}
-      - run: python -m pip install invoke==3.0.3
+      - run: python -m pip install --require-hashes -r requirements-bootstrap.lock
       - id: version
         env:
           REF_NAME: main
