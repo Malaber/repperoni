@@ -1,6 +1,6 @@
 from urllib.parse import urlparse
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,8 +11,7 @@ class Settings(BaseSettings):
     app_base_url: str | None = None
     database_url: str = "sqlite+aiosqlite:///./repperoni.db"
     secret_key: str = "change-me-in-production"
-    algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24 * 28
+    access_token_expire_minutes: int = Field(default=60, ge=5, le=60 * 24)
     session_max_age_seconds: int = 60 * 60 * 24 * 180
     session_idle_timeout_seconds: int = 60 * 60 * 24 * 28
     auth_flow_expire_seconds: int = 10 * 60

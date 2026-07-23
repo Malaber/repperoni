@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.security import TOKEN_ALGORITHM, TOKEN_AUDIENCE, TOKEN_ISSUER
 from app.models import User
 from app.services.auth_sessions import get_session_user
 
@@ -21,7 +22,20 @@ async def get_optional_current_user(
     if not token:
         return await get_session_user(request, db)
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[TOKEN_ALGORITHM],
+            audience=TOKEN_AUDIENCE,
+            issuer=TOKEN_ISSUER,
+            options={
+                "require_aud": True,
+                "require_exp": True,
+                "require_iat": True,
+                "require_iss": True,
+                "require_sub": True,
+            },
+        )
         user_id = UUID(payload["sub"])
     except (JWTError, KeyError, TypeError, ValueError):
         return None

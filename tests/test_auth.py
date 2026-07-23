@@ -11,7 +11,7 @@ from app.api.deps import get_current_user, get_optional_current_user
 from app.api.v1.routes.auth import SAFE_ROUTE_PATHS, passkey_router
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
+from app.core.security import TOKEN_ALGORITHM, TOKEN_AUDIENCE, TOKEN_ISSUER, create_access_token
 from app.models import AuthSession, Passkey
 from app.services.auth_sessions import SESSION_KEY, get_session_user, revoke_auth_session
 from app.services.passkey_repository import RepperoniPasskeyRepository
@@ -26,8 +26,16 @@ def request_with_session(values=None):
 def test_access_token_contains_user_id():
     user_id = uuid.uuid4()
     token = create_access_token(user_id)
-    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    payload = jwt.decode(
+        token,
+        settings.secret_key,
+        algorithms=[TOKEN_ALGORITHM],
+        audience=TOKEN_AUDIENCE,
+        issuer=TOKEN_ISSUER,
+    )
     assert payload["sub"] == str(user_id)
+    assert payload["iat"] < payload["exp"]
+    assert payload["exp"] - payload["iat"] == 60 * 60
 
 
 def test_passkey_repository_lifecycle(user):
@@ -188,6 +196,15 @@ def test_bearer_and_optional_auth_dependencies(user):
         async with SessionLocal() as db:
             assert await get_optional_current_user(request, db, None) is None
             assert await get_optional_current_user(request, db, "not-a-jwt") is None
+            legacy_token = jwt.encode(
+                {
+                    "sub": str(user.id),
+                    "exp": datetime.now(UTC) + timedelta(minutes=5),
+                },
+                settings.secret_key,
+                algorithm=TOKEN_ALGORITHM,
+            )
+            assert await get_optional_current_user(request, db, legacy_token) is None
             token = create_access_token(user.id)
             assert (await get_optional_current_user(request, db, token)).id == user.id
         try:
