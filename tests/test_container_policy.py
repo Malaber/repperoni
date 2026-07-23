@@ -38,6 +38,7 @@ def test_docker_runs_as_fixed_non_root_without_trusting_forwarded_headers():
     assert "org.opencontainers.image.revision" in dockerfile
     assert "APP_REVISION=${REPPERONI_REVISION}" in dockerfile
     assert "python:3.14-slim@sha256:" in dockerfile
+    assert "AUTO_MIGRATE=false" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements.lock" in dockerfile
     assert "pip install --no-cache-dir --no-deps --no-build-isolation ." in dockerfile
     assert "COPY .github ./.github" in dockerfile

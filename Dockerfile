@@ -3,6 +3,7 @@ FROM ${PYTHON_IMAGE} AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    AUTO_MIGRATE=false \
     ENVIRONMENT=production \
     DATABASE_URL=sqlite+aiosqlite:////data/repperoni.db
 WORKDIR /app
