@@ -2,9 +2,11 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastpasskey import PasskeyCredential
 from fastapi import HTTPException
 from jose import jwt
+from pydantic import ValidationError
 from starlette.requests import Request
 
 from app.api.deps import get_current_user, get_optional_current_user
@@ -219,10 +221,81 @@ def test_bearer_and_optional_auth_dependencies(user):
 
 def test_settings_normalize_urls_and_lists():
     configured = Settings(
+        _env_file=None,
         app_base_url="https://repperoni.example/",
         cors_origins="https://ios.example, https://web.example",
+        webauthn_rp_id="repperoni.example",
         webcredentials_apps="TEAM.app",
     )
     assert configured.app_base_url == "https://repperoni.example"
     assert configured.cors_origins == ["https://ios.example", "https://web.example"]
     assert configured.webcredentials_apps == ["TEAM.app"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"secret_key": "short"},
+        {"secure_cookies": False},
+        {"app_base_url": "http://repperoni.example"},
+        {"app_base_url": None},
+        {"webauthn_rp_id": None},
+    ],
+)
+def test_deployed_settings_fail_closed(override):
+    values = {
+        "_env_file": None,
+        "environment": "production",
+        "app_base_url": "https://repperoni.example",
+        "secret_key": "s" * 32,
+        "secure_cookies": True,
+        "webauthn_rp_id": "repperoni.example",
+    }
+    values.update(override)
+    with pytest.raises(ValidationError):
+        Settings(**values)
+
+
+def test_deployed_settings_lock_cookie_host_and_origin():
+    configured = Settings(
+        _env_file=None,
+        environment="review",
+        app_base_url="https://pr-12.pr.repperoni.example",
+        secret_key="s" * 32,
+        secure_cookies=True,
+        webauthn_rp_id="pr.repperoni.example",
+        cors_origins="https://native.example",
+    )
+    assert configured.deployed is True
+    assert configured.session_cookie_name == "__Host-repperoni-session"
+    assert configured.trusted_hosts == [
+        "127.0.0.1",
+        "localhost",
+        "pr-12.pr.repperoni.example",
+    ]
+    assert configured.trusted_origins == {
+        "https://native.example",
+        "https://pr-12.pr.repperoni.example",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("app_base_url", "https://user:secret@repperoni.example"),
+        ("app_base_url", "https://repperoni.example/path"),
+        ("cors_origins", "*"),
+        ("cors_origins", "https://cors.example/path"),
+        ("webauthn_rp_id", "https://repperoni.example"),
+        ("webauthn_rp_id", "evil.example"),
+    ],
+)
+def test_settings_reject_ambiguous_security_origins(field, value):
+    arguments = {
+        "_env_file": None,
+        "app_base_url": "https://repperoni.example",
+        "webauthn_rp_id": "repperoni.example",
+        field: value,
+    }
+    with pytest.raises(ValidationError):
+        Settings(**arguments)

@@ -3,6 +3,7 @@ FROM python:${PYTHON_VERSION}-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    ENVIRONMENT=production \
     DATABASE_URL=sqlite+aiosqlite:////data/repperoni.db
 WORKDIR /app
 

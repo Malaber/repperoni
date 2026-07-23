@@ -7,6 +7,7 @@ from pathlib import Path
 
 TEST_DATABASE = Path(tempfile.gettempdir()) / f"repperoni-pytest-{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE}"
+os.environ["ENVIRONMENT"] = "test"
 os.environ["APP_BASE_URL"] = "http://localhost"
 os.environ["WEBAUTHN_RP_ID"] = "localhost"
 os.environ["SECRET_KEY"] = "repperoni-pytest-secret"
