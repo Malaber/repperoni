@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _ensure_utc(value: datetime) -> datetime:
@@ -15,10 +15,25 @@ def _ensure_utc(value: datetime) -> datetime:
 UTCDateTime = Annotated[datetime, AfterValidator(_ensure_utc)]
 
 
+def _strip_required(value):
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank")
+    return value
+
+
 class ExerciseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     muscle_group: str = Field(min_length=1, max_length=80)
     equipment: str = Field(min_length=1, max_length=80)
+
+    _normalize_text = field_validator(
+        "name",
+        "muscle_group",
+        "equipment",
+        mode="before",
+    )(_strip_required)
 
 
 class ExerciseOut(BaseModel):
@@ -42,6 +57,8 @@ class SetCreate(BaseModel):
     reps: int = Field(ge=1, le=1000)
     rpe: Decimal | None = Field(default=None, ge=1, le=10, decimal_places=1)
     client_mutation_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+    _normalize_mutation_id = field_validator("client_mutation_id", mode="before")(_strip_required)
 
 
 class SetUpdate(BaseModel):
@@ -83,6 +100,8 @@ class StationOut(BaseModel):
 class WorkoutCreate(BaseModel):
     name: str = Field(default="Workout", min_length=1, max_length=120)
     notes: str | None = Field(default=None, max_length=2000)
+
+    _normalize_name = field_validator("name", mode="before")(_strip_required)
 
 
 class WorkoutOut(BaseModel):

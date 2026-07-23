@@ -168,10 +168,20 @@ def test_complete_workout_and_previous_performance(client):
     assert first.json()["completed_at"].endswith("Z")
     retried = client.post(
         set_url,
-        json={"weight_kg": "80.50", "reps": 8, "client_mutation_id": mutation_id},
+        json={
+            "weight_kg": "80.50",
+            "reps": 8,
+            "rpe": "8.5",
+            "client_mutation_id": mutation_id,
+        },
     )
     assert retried.status_code == 200
     assert retried.json()["id"] == first.json()["id"]
+    conflicting_retry = client.post(
+        set_url,
+        json={"weight_kg": "81", "reps": 8, "client_mutation_id": mutation_id},
+    )
+    assert conflicting_retry.status_code == 409
 
     changed = client.patch(
         f"{set_url}/{first.json()['id']}", json={"weight_kg": "82.50", "reps": 7}
@@ -201,9 +211,15 @@ def test_set_delete_and_workout_listing(client):
     workout = add_station(client, start_workout(client), exercise)
     station = workout["stations"][0]
     url = f"/api/v1/workouts/{workout['id']}/stations/{station['id']}/sets"
-    entry = client.post(url, json={"weight_kg": 20, "reps": 10}).json()
-    assert client.delete(f"{url}/{entry['id']}").status_code == 204
-    assert client.delete(f"{url}/{entry['id']}").status_code == 404
+    first = client.post(url, json={"weight_kg": 20, "reps": 10}).json()
+    second = client.post(url, json={"weight_kg": 21, "reps": 9}).json()
+    assert client.delete(f"{url}/{first['id']}").status_code == 204
+    assert client.delete(f"{url}/{first['id']}").status_code == 404
+    after_gap = client.post(url, json={"weight_kg": 22, "reps": 8})
+    assert after_gap.status_code == 201
+    assert after_gap.json()["set_number"] == 3
+    assert client.delete(f"{url}/{second['id']}").status_code == 204
+    assert client.delete(f"{url}/{after_gap.json()['id']}").status_code == 204
     assert client.get(f"/api/v1/workouts/{workout['id']}").json()["total_sets"] == 0
     assert client.get("/api/v1/workouts", params={"limit": 1}).status_code == 200
 
@@ -248,6 +264,11 @@ def test_cross_user_resources_are_hidden(client, user):
 def test_validation_and_missing_resources(client):
     assert client.get("/api/v1/workouts/active").json() is None
     assert client.post("/api/v1/workouts", json={"name": ""}).status_code == 422
+    assert client.post("/api/v1/workouts", json={"name": "   "}).status_code == 422
+    for field in ("name", "muscle_group", "equipment"):
+        exercise = {"name": "Press", "muscle_group": "Chest", "equipment": "Barbell"}
+        exercise[field] = " \n "
+        assert client.post("/api/v1/exercises", json=exercise).status_code == 422
     assert client.get(f"/api/v1/workouts/{uuid.uuid4()}").status_code == 404
     assert client.get(f"/api/v1/exercises/{uuid.uuid4()}/last-performance").status_code == 404
     workout = start_workout(client)
