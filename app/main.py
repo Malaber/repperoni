@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(
         SessionMiddleware,
-        secret_key=settings.secret_key,
+        secret_key=settings.secret_key_value,
         session_cookie=settings.session_cookie_name,
         https_only=settings.secure_cookies,
         same_site="lax",

@@ -23,6 +23,6 @@ def create_access_token(user_id: UUID) -> str:
             "iss": TOKEN_ISSUER,
             "sub": str(user_id),
         },
-        settings.secret_key,
+        settings.secret_key_value,
         algorithm=TOKEN_ALGORITHM,
     )

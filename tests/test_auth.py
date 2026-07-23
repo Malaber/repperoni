@@ -37,7 +37,7 @@ def test_access_token_contains_user_id():
     token = create_access_token(user_id)
     payload = jwt.decode(
         token,
-        settings.secret_key,
+        settings.secret_key_value,
         algorithms=[TOKEN_ALGORITHM],
         audience=TOKEN_AUDIENCE,
         issuer=TOKEN_ISSUER,
@@ -368,7 +368,7 @@ def test_bearer_and_optional_auth_dependencies(user):
                     "sub": str(user.id),
                     "exp": datetime.now(UTC) + timedelta(minutes=5),
                 },
-                settings.secret_key,
+                settings.secret_key_value,
                 algorithm=TOKEN_ALGORITHM,
             )
             assert await get_optional_current_user(request, db, legacy_token) is None
@@ -408,12 +408,15 @@ def test_registration_mode_defaults_to_first_user(monkeypatch):
     "override",
     [
         {"secret_key": "short"},
+        {"secret_key": "replace-with-a-long-random-value"},
+        {"secret_key": "repperoni-local-e2e-secret"},
         {"secure_cookies": False},
         {"app_base_url": "http://repperoni.example"},
         {"app_base_url": None},
         {"webauthn_rp_id": None},
         {"registration_bootstrap_token": None},
         {"registration_bootstrap_token": "short"},
+        {"cors_origins": "http://native.example"},
     ],
 )
 def test_deployed_settings_fail_closed(override):
@@ -430,6 +433,30 @@ def test_deployed_settings_fail_closed(override):
     values.update(override)
     with pytest.raises(ValidationError):
         Settings(**values)
+
+
+def test_settings_hide_secrets_in_validation_errors():
+    secret_marker = "secret-marker-" + ("x" * 32)
+    bootstrap_marker = "bootstrap-marker-" + ("y" * 32)
+    with pytest.raises(ValidationError) as captured:
+        Settings(
+            _env_file=None,
+            environment="production",
+            registration_mode="first-user",
+            registration_bootstrap_token=bootstrap_marker,
+            app_base_url="https://repperoni.example",
+            secret_key=secret_marker,
+            secure_cookies=False,
+            webauthn_rp_id="repperoni.example",
+        )
+    message = str(captured.value)
+    assert secret_marker not in message
+    assert bootstrap_marker not in message
+
+
+def test_bearer_lifetime_is_capped_at_one_hour():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, access_token_expire_minutes=61)
 
 
 def test_deployed_settings_lock_cookie_host_and_origin():

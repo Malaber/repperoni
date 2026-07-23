@@ -24,7 +24,7 @@ async def get_optional_current_user(
     try:
         payload = jwt.decode(
             token,
-            settings.secret_key,
+            settings.secret_key_value,
             algorithms=[TOKEN_ALGORITHM],
             audience=TOKEN_AUDIENCE,
             issuer=TOKEN_ISSUER,

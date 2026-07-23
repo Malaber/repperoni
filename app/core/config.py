@@ -9,6 +9,14 @@ DEPLOYED_ENVIRONMENTS = {"production", "review"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 # Public sentinel: deployed configuration rejects it.
 PLACEHOLDER_SECRET = "change-me-in-production"  # nosec B105
+INSECURE_SECRET_KEYS = frozenset(
+    {
+        PLACEHOLDER_SECRET,
+        "replace-with-a-long-random-value",
+        "repperoni-local-e2e-secret",
+        "repperoni-pytest-secret",
+    }
+)
 RegistrationMode = Literal["closed", "first-user", "open"]
 
 
@@ -34,7 +42,12 @@ def _normalized_origin(value: str, *, field_name: str) -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     app_name: str = "Repperoni"
     app_version: str = Field(default="dev", min_length=1, max_length=64)
@@ -47,8 +60,8 @@ class Settings(BaseSettings):
     registration_bootstrap_token: SecretStr | None = None
     app_base_url: str | None = None
     database_url: str = "sqlite+aiosqlite:///./repperoni.db"
-    secret_key: str = PLACEHOLDER_SECRET
-    access_token_expire_minutes: int = Field(default=60, ge=5, le=60 * 24)
+    secret_key: SecretStr = SecretStr(PLACEHOLDER_SECRET)
+    access_token_expire_minutes: int = Field(default=60, ge=5, le=60)
     session_max_age_seconds: int = 60 * 60 * 24 * 180
     session_idle_timeout_seconds: int = 60 * 60 * 24 * 28
     auth_flow_expire_seconds: int = 10 * 60
@@ -114,10 +127,16 @@ class Settings(BaseSettings):
                 raise ValueError("deployed environments require an https app_base_url")
             if not self.secure_cookies:
                 raise ValueError("deployed environments require secure cookies")
-            if self.secret_key == PLACEHOLDER_SECRET or len(self.secret_key) < 32:
+            secret_key = self.secret_key.get_secret_value()
+            if secret_key in INSECURE_SECRET_KEYS or len(secret_key) < 32:
                 raise ValueError("deployed environments require a 32-character secret key")
             if not self.webauthn_rp_id:
                 raise ValueError("deployed environments require webauthn_rp_id")
+            if any(
+                urlparse(origin).scheme != "https" and urlparse(origin).hostname not in LOCAL_HOSTS
+                for origin in self.cors_origins
+            ):
+                raise ValueError("deployed cors_origins must use https")
             if self.registration_mode == "first-user" and (
                 self.registration_bootstrap_token is None
                 or len(self.registration_bootstrap_token.get_secret_value()) < 32
@@ -130,6 +149,10 @@ class Settings(BaseSettings):
     @property
     def deployed(self) -> bool:
         return self.environment in DEPLOYED_ENVIRONMENTS
+
+    @property
+    def secret_key_value(self) -> str:
+        return self.secret_key.get_secret_value()
 
     @property
     def session_cookie_name(self) -> str:
