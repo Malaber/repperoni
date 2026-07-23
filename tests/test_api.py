@@ -71,7 +71,9 @@ def test_health_and_auth_guards(client):
 
 def test_authenticated_web_shell_and_public_assets(client, user):
     app.dependency_overrides[get_optional_current_user] = lambda: user
-    assert "Ready to get" in client.get("/").text
+    shell = client.get("/")
+    assert "Ready to get" in shell.text
+    assert 'aria-label="Sign out" title="Sign out" disabled' in shell.text
     assert client.get("/login", follow_redirects=False).headers["location"] == "/"
     assert client.get("/manifest.webmanifest").status_code == 200
     assert client.get("/service-worker.js").headers["cache-control"] == "no-cache"
