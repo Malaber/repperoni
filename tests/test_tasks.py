@@ -44,3 +44,4 @@ def test_environment_bootstrap_is_hash_locked():
     assert "--require-hashes -r requirements-dev.lock" in tasks
     assert "--no-deps --no-build-isolation -e ." in tasks
     assert "--ignore-matching-lines='^[[:space:]]*#'" in tasks
+    assert 'c.run("npm run check:js")' in tasks

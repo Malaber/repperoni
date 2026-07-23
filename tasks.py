@@ -260,7 +260,7 @@ def check_python(c):
 
 @task
 def check_js(c):
-    c.run("npm run test:js")
+    c.run("npm run check:js")
 
 
 @task

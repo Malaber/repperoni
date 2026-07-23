@@ -6,6 +6,8 @@
     "node": "24.x"
   },
   "scripts": {
+    "check:syntax": "node --check app/web/static/app.js && node --check app/web/static/helpers.js && node --check app/web/static/login.js && node --check app/web/static/service-worker.js && node --check scripts/run_ui_e2e.mjs",
+    "check:js": "npm run check:syntax && npm run test:js",
     "test:js": "node ./node_modules/c8/bin/c8.js --all --include app/web/static/helpers.js --check-coverage --branches 100 --functions 100 --lines 100 node --test app/web/static/app.test.js"
   },
   "devDependencies": {
