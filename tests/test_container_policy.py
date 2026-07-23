@@ -17,14 +17,14 @@ def test_webhooker_configs_isolate_review_data():
     assert "pr-{pr}/repperoni.db" in review
     assert "hostname_template: pr-{pr}.repperoni-review.malaber.de" in review
     assert "pr.repperoni.malaber.de" not in review
-    assert "tag_template: sha-{sha}" in review
+    assert "tag_template: review-sha-{sha}" in review
     assert "production_hostname: repperoni.malaber.de" in production
     assert "REGISTRATION_MODE=closed" in read("deploy/webhooker/env/production.common.env")
     assert "system_traefik_reviews_external" in review_compose
     assert "system_traefik_external" not in review_compose.replace(
         "system_traefik_reviews_external", ""
     )
-    assert "system_traefik_external" in production_compose
+    assert "repperoni_traefik_external" in production_compose
     assert "      - default" not in review_compose
 
 
@@ -55,6 +55,7 @@ def test_compose_confines_application_containers():
         assert "docker.sock" not in compose
         assert "network_mode: host" not in compose
         assert 'user: "10001:10001"' in compose
+        assert "pull_policy: always" in compose
         assert "read_only: true" in compose
         assert "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777" in compose
         assert "cap_drop:\n      - ALL" in compose

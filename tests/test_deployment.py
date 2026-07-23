@@ -31,6 +31,9 @@ def test_privileged_publisher_never_checks_out_untrusted_code():
     assert "head_repository.full_name == github.repository" in workflow
     assert "org.opencontainers.image.revision" in workflow
     assert "attest-build-provenance@" in workflow
+    assert 'final_tag="review-sha-$REVISION"' in workflow
+    assert 'final_tag="candidate-sha-$REVISION"' in workflow
+    assert 'final_tag="sha-$REVISION"' not in workflow
     assert "uses: ./.github/workflows/pr-review.yml" in workflow
     assert "uses: ./.github/workflows/release.yml" in workflow
     assert "WEBHOOKER_" not in workflow
@@ -60,10 +63,14 @@ def test_release_promotes_the_tested_sha():
     workflow = read(".github/workflows/release.yml")
     assert "workflow_call:" in workflow
     assert "environment: production" in workflow
-    assert "ref: ${{ inputs.revision }}" in workflow
-    assert '[[ "$(git rev-parse origin/main)" == "$REVISION" ]]' in workflow
+    assert "actions/checkout@" not in workflow
+    assert "python -m invoke" not in workflow
+    assert "requirements-bootstrap.lock" not in workflow
+    assert 'gh api "repos/$REPOSITORY/commits/main"' in workflow
     assert "--signer-workflow" in workflow
     assert '"$IMAGE@$DIGEST"' in workflow
+    assert '"$IMAGE:candidate-sha-$REVISION"' in workflow
+    assert '--tag "$IMAGE:sha-$REVISION"' in workflow
     assert "imagetools create" in workflow
     assert "/health/version" in workflow
     assert 'X-GitHub-Event": "push' in workflow

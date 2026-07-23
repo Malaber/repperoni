@@ -1,6 +1,7 @@
 services:
   app:
     image: ${APP_IMAGE}
+    pull_policy: always
     restart: unless-stopped
     user: "10001:10001"
     init: true
@@ -46,11 +47,11 @@ services:
       - traefik.http.middlewares.${TRAEFIK_ROUTER}-rate.ratelimit.period=1s
       - traefik.http.middlewares.${TRAEFIK_ROUTER}-rate.ratelimit.burst=40
       - traefik.http.services.${TRAEFIK_SERVICE}.loadbalancer.server.port=8000
-      - traefik.docker.network=system_traefik_external
+      - traefik.docker.network=repperoni_traefik_external
     networks:
       - traefik
 
 networks:
   traefik:
-    name: system_traefik_external
+    name: repperoni_traefik_external
     external: true

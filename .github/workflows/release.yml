@@ -32,26 +32,40 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ inputs.revision }}
-          fetch-depth: 0
-          persist-credentials: false
       - name: Require exact protected main revision
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
           REVISION: ${{ inputs.revision }}
         run: |
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin main
-          [[ "$(git rev-parse origin/main)" == "$REVISION" ]]
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with: {python-version: '3.14'}
-      - run: python -m pip install --require-hashes -r requirements-bootstrap.lock
+          current_revision="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
+          [[ "$current_revision" == "$REVISION" ]]
       - id: version
         env:
-          REF_NAME: main
-          RUN_NUMBER: ${{ github.run_number }}
-        run: python -m invoke compute-version
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          latest="$(
+            gh api --paginate "repos/$REPOSITORY/tags?per_page=100" --jq '.[].name' |
+              sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' |
+              sort -V |
+              tail -n 1
+          )"
+          [[ -n "$latest" ]] || latest=0.1.0
+          IFS=. read -r major minor patch <<<"$latest"
+          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
+          while true; do
+            patch=$((patch + 1))
+            version="$major.$minor.$patch"
+            if ! gh api "repos/$REPOSITORY/git/ref/tags/v$version" >/dev/null 2>&1; then
+              break
+            fi
+          done
+          {
+            echo "release_version=$version"
+            echo "git_tag=v$version"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -68,7 +82,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.release_version }}
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          tag_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$REVISION" |
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:candidate-sha-$REVISION" |
             awk '/^Digest:/ {print $2; exit}')"
           [[ "$tag_digest" == "$DIGEST" ]]
           gh attestation verify "oci://$IMAGE@$DIGEST" \
@@ -76,12 +90,16 @@ jobs:
             --signer-workflow "$REPOSITORY/.github/workflows/publish.yml" \
             --source-ref refs/heads/main
           docker buildx imagetools create \
+            --tag "$IMAGE:sha-$REVISION" \
             --tag "$IMAGE:$VERSION" \
             --tag "$IMAGE:latest" \
             "$IMAGE@$DIGEST"
           promoted_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" |
             awk '/^Digest:/ {print $2; exit}')"
           [[ "$promoted_digest" == "$DIGEST" ]]
+          deployed_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$REVISION" |
+            awk '/^Digest:/ {print $2; exit}')"
+          [[ "$deployed_digest" == "$DIGEST" ]]
       - if: always()
         run: docker logout ghcr.io
       - name: Wake production deployment

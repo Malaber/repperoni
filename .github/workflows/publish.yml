@@ -109,7 +109,11 @@ jobs:
             docker push "$IMAGE:$platform_tag"
             sources+=("$IMAGE:$platform_tag")
           done
-          final_tag="sha-$REVISION"
+          if [[ "${{ steps.source.outputs.channel }}" == review ]]; then
+            final_tag="review-sha-$REVISION"
+          else
+            final_tag="candidate-sha-$REVISION"
+          fi
           docker buildx imagetools create --tag "$IMAGE:$final_tag" "${sources[@]}"
           digest="$(docker buildx imagetools inspect "$IMAGE:$final_tag" | awk '/^Digest:/ {print $2; exit}')"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]

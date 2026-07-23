@@ -61,8 +61,9 @@ points.
 
 ## Deployment
 
-CI tests Python, JavaScript, desktop, and phone flows before publishing the immutable
-`sha-<full-sha>` multi-architecture image. PR review apps are isolated at
+CI tests Python, JavaScript, desktop, and phone flows before publishing immutable review or
+candidate multi-architecture images. The protected production gate alone promotes a candidate
+to deployable `sha-<full-sha>`. PR review apps are isolated at
 `https://pr-<number>.repperoni-review.malaber.de`; production is
 `https://repperoni.malaber.de`. Releases promote the already-tested image rather than rebuilding
 it. Production registration is closed by default; the documented secret-gated bootstrap opens

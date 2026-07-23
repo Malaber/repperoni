@@ -19,7 +19,7 @@ deployment:
 image:
   registry: ghcr.io
   repository: malaber/repperoni
-  tag_template: sha-{sha}
+  tag_template: review-sha-{sha}
 
 preview:
   base_dir: /srv/repperoni/data/reviews

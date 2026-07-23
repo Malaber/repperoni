@@ -54,7 +54,7 @@ jobs:
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
-          tag_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$REVISION" |
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:review-sha-$REVISION" |
             awk '/^Digest:/ {print $2; exit}')"
           [[ "$tag_digest" == "$DIGEST" ]]
           gh attestation verify "oci://$IMAGE@$DIGEST" \

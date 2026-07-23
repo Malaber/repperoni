@@ -7,15 +7,17 @@ Repperoni follows the same tested-image contract as Planini and Tracy:
 2. CI scans each platform image, then uploads platform archives and SBOMs without registry
    credentials.
 3. A default-branch `workflow_run` publisher validates the embedded revision and publishes it as
-   `ghcr.io/malaber/repperoni:sha-<full-sha>`.
+   `review-sha-<full-sha>` or `candidate-sha-<full-sha>`.
    It is the only job with registry write access and emits signed provenance.
 4. An internal pull request receives a signed synthetic `pull_request` wake event that points
-   Webhooker at that immutable `sha-<full-sha>` image.
+   Webhooker at that immutable `review-sha-<full-sha>` image.
 5. Webhooker deploys it to `https://pr-<pr>.repperoni-review.malaber.de` with isolated SQLite.
    The workflow waits for health and runs mobile E2E before posting the URL.
-6. Successful protected-main CI verifies the digest and publisher identity, promotes that exact
-   manifest to a semantic version and `latest`, then sends the signed production wake. Releases
-   never rebuild application code and fail if the deployed revision differs.
+6. Successful protected-main CI verifies the candidate digest and publisher identity inside the
+   protected production environment, then creates the deployable `sha-<full-sha>`, semantic
+   version, and `latest` tags before sending the signed production wake. Webhooker's main poller
+   cannot deploy a candidate before this gate. Releases never rebuild or execute application code
+   and fail if the deployed revision differs.
 
 ## Repository configuration
 
@@ -49,13 +51,13 @@ subdomain.
 `APP_BASE_URL` remains the exact public origin. These must agree with any future iOS Associated
 Domains entitlement.
 
-Create two external proxy networks and attach the Traefik container to both. Keep the review
-network internal so review code cannot reach production services or the public network:
+Create two dedicated internal proxy networks and attach the Traefik container to both. This keeps
+application containers off Traefik's broader shared network and prevents public egress:
 
 ```bash
-docker network create system_traefik_external
+docker network create --internal repperoni_traefik_external
 docker network create --internal system_traefik_reviews_external
-docker network connect system_traefik_external <traefik-container>
+docker network connect repperoni_traefik_external <traefik-container>
 docker network connect system_traefik_reviews_external <traefik-container>
 ```
 
