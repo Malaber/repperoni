@@ -164,6 +164,9 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.screenshot({path: path.join(resultsDirectory, `${device}-progress.png`), fullPage: true});
   } catch (error) {
     await page.screenshot({path: path.join(resultsDirectory, `${device}-failure.png`), fullPage: true}).catch(() => {});
+    if (errors.length && error instanceof Error) {
+      error.message += `\nBrowser errors before failure: ${errors.join(" | ")}`;
+    }
     throw error;
   } finally {
     await authenticator.dispose();
