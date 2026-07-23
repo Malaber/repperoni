@@ -1,119 +1,176 @@
 name: PR Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      digest:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+      pr_number:
+        required: true
+        type: number
+      revision:
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: write
-  pull-requests: write
 
-concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   review_deploy:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    environment: review
     runs-on: ubuntu-latest
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    outputs:
+      triggered: ${{ steps.wake.outputs.triggered }}
+      url: ${{ steps.image.outputs.url }}
     steps:
-      - uses: actions/checkout@v6
-        with: {ref: '${{ github.event.pull_request.head.sha }}'}
       - id: image
         env:
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "primary_tag=sha-$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          echo "review_tag=pr-$PR_NUMBER-${PR_HEAD_SHA:0:7}" >> "$GITHUB_OUTPUT"
-          echo "url=https://pr-$PR_NUMBER.pr.repperoni.malaber.de" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: echo "url=https://pr-$PR_NUMBER.repperoni-review.malaber.de" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Wait for tested image
+      - name: Verify exact image and trusted provenance
         env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          TAG: ${{ steps.image.outputs.primary_tag }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ inputs.image }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ inputs.revision }}
         run: |
-          for attempt in $(seq 1 60); do
-            docker buildx imagetools inspect "$IMAGE:$TAG" && exit 0
-            echo "Waiting for $IMAGE:$TAG ($attempt/60)"
-            sleep 10
-          done
-          exit 1
-      - name: Create review tag
-        env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          SOURCE: ${{ steps.image.outputs.primary_tag }}
-          TARGET: ${{ steps.image.outputs.review_tag }}
-        run: docker buildx imagetools create --tag "$IMAGE:$TARGET" "$IMAGE:$SOURCE"
-      - name: Wake review deployment
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$REVISION" |
+            awk '/^Digest:/ {print $2; exit}')"
+          [[ "$tag_digest" == "$DIGEST" ]]
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$REPOSITORY" \
+            --signer-workflow "$REPOSITORY/.github/workflows/publish.yml" \
+            --source-ref refs/heads/main
+      - if: always()
+        run: docker logout ghcr.io
+      - name: Wake isolated review deployment
         id: wake
         env:
           WAKE_URL: ${{ vars.WEBHOOKER_REVIEW_WAKE_URL }}
-          WAKE_SECRET: ${{ secrets.WEBHOOKER_WEBHOOK_SECRET }}
-          EVENT_ACTION: ${{ github.event.action }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WAKE_SECRET: ${{ secrets.WEBHOOKER_REVIEW_WEBHOOK_SECRET }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_HEAD_SHA: ${{ inputs.revision }}
           REPOSITORY: ${{ github.repository }}
           DELIVERY_ID: repperoni-review-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          python - <<'PY'
+          python -I - <<'PY'
           import hashlib, hmac, json, os, urllib.request
           if not os.environ["WAKE_URL"] or not os.environ["WAKE_SECRET"]:
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                   stream.write("triggered=false\n")
+              print("Review Webhooker environment is not configured; skipping deployment.")
               raise SystemExit(0)
           owner, repo = os.environ["REPOSITORY"].split("/", 1)
           number = int(os.environ["PR_NUMBER"])
-          payload = {"action": os.environ["EVENT_ACTION"], "number": number,
+          payload = {"action": "synchronize", "number": number,
               "pull_request": {"number": number, "head": {"sha": os.environ["PR_HEAD_SHA"]}},
-              "repository": {"name": repo, "full_name": os.environ["REPOSITORY"], "owner": {"login": owner}}}
+              "repository": {"name": repo, "full_name": os.environ["REPOSITORY"],
+                  "owner": {"login": owner}}}
           body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-          signature = "sha256=" + hmac.new(os.environ["WAKE_SECRET"].encode(), body, hashlib.sha256).hexdigest()
-          request = urllib.request.Request(os.environ["WAKE_URL"], data=body, method="POST", headers={
-              "Content-Type": "application/json", "X-GitHub-Event": "pull_request",
-              "X-GitHub-Delivery": os.environ["DELIVERY_ID"], "X-Hub-Signature-256": signature})
-          with urllib.request.urlopen(request) as response:
+          signature = "sha256=" + hmac.new(
+              os.environ["WAKE_SECRET"].encode(), body, hashlib.sha256
+          ).hexdigest()
+          request = urllib.request.Request(
+              os.environ["WAKE_URL"],
+              data=body,
+              method="POST",
+              headers={"Content-Type": "application/json", "X-GitHub-Event": "pull_request",
+                  "X-GitHub-Delivery": os.environ["DELIVERY_ID"],
+                  "X-Hub-Signature-256": signature},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
               print(f"review wake status={response.status}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
               stream.write("triggered=true\n")
           PY
       - if: steps.wake.outputs.triggered == 'true'
-        env: {REVIEW_URL: '${{ steps.image.outputs.url }}'}
-        run: curl --fail --silent --show-error --retry 36 --retry-all-errors --retry-delay 10 "$REVIEW_URL/health"
-      - uses: actions/setup-python@v6
-        if: steps.wake.outputs.triggered == 'true'
-        with: {python-version: '3.14'}
-      - uses: actions/setup-node@v6
-        if: steps.wake.outputs.triggered == 'true'
-        with: {node-version: '24'}
-      - name: Verify deployed mobile flow
-        if: steps.wake.outputs.triggered == 'true'
-        env: {REVIEW_URL: '${{ steps.image.outputs.url }}'}
+        env:
+          EXPECTED_REVISION: ${{ inputs.revision }}
+          REVIEW_URL: ${{ steps.image.outputs.url }}
         run: |
-          python -m pip install invoke
-          python -m invoke bootstrap-ci
-          python -m invoke install-js
-          python -m invoke install-browser
-          python -m invoke run-browser-e2e --base-url="$REVIEW_URL" --device=mobile
-      - name: Comment verified URL
-        if: steps.wake.outputs.triggered == 'true'
-        uses: actions/github-script@v8
-        env: {REVIEW_URL: '${{ steps.image.outputs.url }}'}
+          response="$(curl --fail --silent --show-error --retry 36 \
+            --retry-all-errors --retry-delay 10 "$REVIEW_URL/health/version")"
+          jq -e --arg revision "$EXPECTED_REVISION" \
+            '.status == "ok" and .revision == $revision' <<<"$response"
+
+  deployed_e2e:
+    needs: review_deploy
+    if: needs.review_deploy.outputs.triggered == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: {python-version: '3.14'}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: {node-version: '24'}
+      - run: python -m pip install invoke==3.0.3
+      - run: python -m invoke bootstrap-ci
+      - run: python -m invoke install-js
+      - run: python -m invoke install-browser
+      - name: Verify deployed mobile flow
+        env:
+          REVIEW_URL: ${{ needs.review_deploy.outputs.url }}
+        run: python -m invoke run-browser-e2e --base-url="$REVIEW_URL" --device=mobile
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployed-mobile-e2e
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 2
+
+  comment:
+    needs: [review_deploy, deployed_e2e]
+    if: needs.review_deploy.outputs.triggered == 'true' && needs.deployed_e2e.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_URL: ${{ needs.review_deploy.outputs.url }}
         with:
           script: |
             const marker = '<!-- repperoni-review-url -->';
             const body = `${marker}\nVerified review app: ${process.env.REVIEW_URL}`;
             const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-            const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number, per_page: 100});
-            const existing = comments.find((comment) => comment.user?.type === 'Bot' && comment.body?.includes(marker));
-            if (existing) await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
-            else await github.rest.issues.createComment({owner, repo, issue_number, body});
+            const issue_number = Number(process.env.PR_NUMBER);
+            const comments = await github.paginate(
+              github.rest.issues.listComments, {owner, repo, issue_number, per_page: 100}
+            );
+            const existing = comments.find(
+              (comment) => comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment(
+                {owner, repo, comment_id: existing.id, body}
+              );
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number, body});
+            }

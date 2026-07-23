@@ -1,0 +1,168 @@
+name: Publish
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' ||
+       github.event.workflow_run.event == 'pull_request')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      channel: ${{ steps.source.outputs.channel }}
+      digest: ${{ steps.publish.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
+      pr_number: ${{ steps.source.outputs.pr_number }}
+      revision: ${{ steps.source.outputs.revision }}
+    steps:
+      - name: Resolve immutable source identity
+        id: source
+        env:
+          CI_EVENT: ${{ github.event.workflow_run.event }}
+          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          case "$CI_EVENT" in
+            pull_request)
+              revision="$PR_HEAD_SHA"
+              [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+              channel=review
+              ;;
+            push)
+              revision="$CI_HEAD_SHA"
+              [[ "$CI_HEAD_BRANCH" == main ]]
+              PR_NUMBER=
+              channel=production
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          {
+            echo "channel=$channel"
+            echo "pr_number=$PR_NUMBER"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: platform-image-*
+          path: /tmp/platform-images
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Load and validate isolated platform archives
+        env:
+          REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          for suffix in linux-amd64 linux-arm64; do
+            archive="/tmp/platform-images/platform-image-$suffix/repperoni-$suffix.tar"
+            test -f "$archive"
+            docker load --input "$archive"
+            actual_revision="$(docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "repperoni-build:$suffix")"
+            [[ "$actual_revision" == "$REVISION" ]]
+          done
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish exact platform archives and manifest
+        id: publish
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          sources=()
+          for suffix in linux-amd64 linux-arm64; do
+            platform_tag="staging-$REVISION-$suffix"
+            docker tag "repperoni-build:$suffix" "$IMAGE:$platform_tag"
+            docker push "$IMAGE:$platform_tag"
+            sources+=("$IMAGE:$platform_tag")
+          done
+          final_tag="sha-$REVISION"
+          docker buildx imagetools create --tag "$IMAGE:$final_tag" "${sources[@]}"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$final_tag" | awk '/^Digest:/ {print $2; exit}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/published
+          printf '%s\n' "$IMAGE" > /tmp/published/image.txt
+          printf '%s\n' "$digest" > /tmp/published/digest.txt
+          printf '%s\n' "$REVISION" > /tmp/published/revision.txt
+          printf '%s\n' "${{ steps.source.outputs.channel }}" > /tmp/published/channel.txt
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+      - if: always()
+        run: docker logout ghcr.io
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: published-image
+          path: /tmp/published/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: image-sboms
+          path: /tmp/platform-images/**/*.spdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  review:
+    needs: publish
+    if: needs.publish.outputs.channel == 'review'
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+      pull-requests: write
+    uses: ./.github/workflows/pr-review.yml
+    with:
+      digest: ${{ needs.publish.outputs.digest }}
+      image: ${{ needs.publish.outputs.image }}
+      pr_number: ${{ fromJSON(needs.publish.outputs.pr_number) }}
+      revision: ${{ needs.publish.outputs.revision }}
+
+  release:
+    needs: publish
+    if: needs.publish.outputs.channel == 'production'
+    permissions:
+      attestations: read
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release.yml
+    with:
+      digest: ${{ needs.publish.outputs.digest }}
+      image: ${{ needs.publish.outputs.image }}
+      revision: ${{ needs.publish.outputs.revision }}

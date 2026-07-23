@@ -1,80 +1,156 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  workflow_call:
+    inputs:
+      digest:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+      revision:
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-main
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   release:
-    if: github.event.workflow_run.conclusion == 'success'
+    environment: production
     runs-on: ubuntu-latest
+    permissions:
+      attestations: read
+      contents: write
+      packages: write
     steps:
-      - uses: actions/checkout@v6
-        with: {ref: '${{ github.event.workflow_run.head_sha }}', fetch-depth: 0}
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact protected main revision
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          [[ "$(git rev-parse origin/main)" == "$REVISION" ]]
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with: {python-version: '3.14'}
-      - run: python -m pip install invoke
+      - run: python -m pip install invoke==3.0.3
       - id: version
         env:
           REF_NAME: main
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: python -m invoke compute-version
-      - id: image
-        env: {REPOSITORY: '${{ github.repository }}'}
-        run: echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Promote exact tested image
+      - name: Verify provenance and promote exact digest
         env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          SOURCE: sha-${{ github.event.workflow_run.head_sha }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ inputs.image }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ inputs.revision }}
           VERSION: ${{ steps.version.outputs.release_version }}
         run: |
-          docker buildx imagetools inspect "$IMAGE:$SOURCE"
-          docker buildx imagetools create --tag "$IMAGE:$VERSION" --tag "$IMAGE:latest" "$IMAGE:$SOURCE"
-      - name: Create tag and release
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$REVISION" |
+            awk '/^Digest:/ {print $2; exit}')"
+          [[ "$tag_digest" == "$DIGEST" ]]
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$REPOSITORY" \
+            --signer-workflow "$REPOSITORY/.github/workflows/publish.yml" \
+            --source-ref refs/heads/main
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
+          promoted_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" |
+            awk '/^Digest:/ {print $2; exit}')"
+          [[ "$promoted_digest" == "$DIGEST" ]]
+      - if: always()
+        run: docker logout ghcr.io
+      - name: Wake production deployment
+        env:
+          WAKE_URL: ${{ vars.WEBHOOKER_PRODUCTION_WAKE_URL }}
+          WAKE_SECRET: ${{ secrets.WEBHOOKER_PRODUCTION_WEBHOOK_SECRET }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.revision }}
+          DELIVERY_ID: repperoni-production-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python -I - <<'PY'
+          import hashlib, hmac, json, os, urllib.request
+          if not os.environ["WAKE_URL"] or not os.environ["WAKE_SECRET"]:
+              raise SystemExit("Production Webhooker environment is required")
+          owner, repo = os.environ["REPOSITORY"].split("/", 1)
+          payload = {"ref": "refs/heads/main", "after": os.environ["HEAD_SHA"],
+              "repository": {"name": repo, "full_name": os.environ["REPOSITORY"],
+                  "owner": {"login": owner}}}
+          body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+          signature = "sha256=" + hmac.new(
+              os.environ["WAKE_SECRET"].encode(), body, hashlib.sha256
+          ).hexdigest()
+          request = urllib.request.Request(
+              os.environ["WAKE_URL"],
+              data=body,
+              method="POST",
+              headers={"Content-Type": "application/json", "X-GitHub-Event": "push",
+                  "X-GitHub-Delivery": os.environ["DELIVERY_ID"],
+                  "X-Hub-Signature-256": signature},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print(f"production wake status={response.status}")
+          PY
+      - name: Verify deployed revision
+        env:
+          EXPECTED_REVISION: ${{ inputs.revision }}
+          PRODUCTION_URL: https://repperoni.malaber.de
+        run: |
+          response="$(curl --fail --silent --show-error --retry 36 \
+            --retry-all-errors --retry-delay 10 "$PRODUCTION_URL/health/version")"
+          jq -e --arg revision "$EXPECTED_REVISION" \
+            '.status == "ok" and .revision == $revision' <<<"$response"
+      - name: Create immutable Git tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ inputs.revision }}
+          TAG: ${{ steps.version.outputs.git_tag }}
+        run: |
+          if existing="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null)"; then
+            [[ "$existing" == "$RELEASE_SHA" ]]
+          else
+            gh api --method POST "repos/$REPOSITORY/git/refs" \
+              -f ref="refs/tags/$TAG" \
+              -f sha="$RELEASE_SHA"
+          fi
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.git_tag }}
           VERSION: ${{ steps.version.outputs.release_version }}
+          RELEASE_SHA: ${{ inputs.revision }}
         run: |
-          git tag "$TAG" "${{ github.event.workflow_run.head_sha }}"
-          git push origin "$TAG"
-          gh release create "$TAG" --title "Repperoni $VERSION" --generate-notes --target "${{ github.event.workflow_run.head_sha }}"
-      - name: Wake production deployment
-        env:
-          WAKE_URL: ${{ vars.WEBHOOKER_PRODUCTION_WAKE_URL }}
-          WAKE_SECRET: ${{ secrets.WEBHOOKER_WEBHOOK_SECRET }}
-          REPOSITORY: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          DELIVERY_ID: repperoni-production-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          python - <<'PY'
-          import hashlib, hmac, json, os, urllib.request
-          if not os.environ["WAKE_URL"] or not os.environ["WAKE_SECRET"]:
-              raise SystemExit(0)
-          owner, repo = os.environ["REPOSITORY"].split("/", 1)
-          payload = {"ref": "refs/heads/main", "after": os.environ["HEAD_SHA"],
-              "repository": {"name": repo, "full_name": os.environ["REPOSITORY"], "owner": {"login": owner}}}
-          body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-          signature = "sha256=" + hmac.new(os.environ["WAKE_SECRET"].encode(), body, hashlib.sha256).hexdigest()
-          request = urllib.request.Request(os.environ["WAKE_URL"], data=body, method="POST", headers={
-              "Content-Type": "application/json", "X-GitHub-Event": "push",
-              "X-GitHub-Delivery": os.environ["DELIVERY_ID"], "X-Hub-Signature-256": signature})
-          with urllib.request.urlopen(request) as response:
-              print(f"production wake status={response.status}")
-          PY
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --latest --title "Repperoni $VERSION"
+          else
+            gh release create "$TAG" \
+              --latest \
+              --title "Repperoni $VERSION" \
+              --generate-notes \
+              --target "$RELEASE_SHA"
+          fi
