@@ -34,8 +34,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
 FROM base AS test
 USER root
 COPY requirements-dev.lock ./
+COPY requirements-bootstrap.lock ./
 COPY tests ./tests
 COPY tasks.py ./tasks.py
+COPY Dockerfile docker-compose.yml ./
+COPY .github ./.github
+COPY deploy ./deploy
+COPY scripts ./scripts
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements-dev.lock \
     && python -m pip install --no-cache-dir --no-deps --no-build-isolation -e .
 USER 10001:10001

@@ -1,5 +1,4 @@
 .git
-.github
 .venv
 .tmp
 node_modules
@@ -11,3 +10,6 @@ playwright-report
 __pycache__
 .coverage
 htmlcov
+.env
+deploy/secrets
+deploy/webhooker/secrets/*.env

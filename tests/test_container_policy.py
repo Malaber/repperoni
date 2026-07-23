@@ -40,6 +40,8 @@ def test_docker_runs_as_fixed_non_root_without_trusting_forwarded_headers():
     assert "python:3.14-slim@sha256:" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements.lock" in dockerfile
     assert "pip install --no-cache-dir --no-deps --no-build-isolation ." in dockerfile
+    assert "COPY .github ./.github" in dockerfile
+    assert "deploy/webhooker/secrets/*.env" in read(".dockerignore")
     assert "--no-server-header" in start
     assert "--no-proxy-headers" in start
     assert "--forwarded-allow-ips" not in start
