@@ -1,12 +1,15 @@
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from pydantic import SecretStr
 
 from app.api.deps import get_current_user, get_optional_current_user
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.core.security import create_access_token
 from app.main import app
+from app.models import AuthSession
 from tests.conftest import create_user
 
 
@@ -30,6 +33,20 @@ def add_station(client, workout, exercise):
     )
     assert response.status_code == 201
     return response.json()
+
+
+async def bearer_token_for(user):
+    now = datetime.now(UTC)
+    async with SessionLocal() as db:
+        auth_session = AuthSession(
+            user_id=user.id,
+            last_seen_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        db.add(auth_session)
+        await db.commit()
+        await db.refresh(auth_session)
+        return create_access_token(user.id, auth_session.id)
 
 
 def test_health_and_auth_guards(client):
@@ -113,7 +130,7 @@ def test_request_origin_and_body_size_are_enforced(client, user):
         "/api/v1/workouts",
         json={"name": "Native workout"},
         headers={
-            "Authorization": f"Bearer {create_access_token(user.id)}",
+            "Authorization": f"Bearer {asyncio.run(bearer_token_for(user))}",
             "Origin": "https://native.example",
         },
     )

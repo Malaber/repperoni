@@ -17,7 +17,7 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-async def create_auth_session(request: HTTPConnection, db: AsyncSession, user: User) -> None:
+async def create_auth_session(request: HTTPConnection, db: AsyncSession, user: User) -> UUID:
     now = datetime.now(UTC)
     auth_session = AuthSession(
         user_id=user.id,
@@ -29,6 +29,7 @@ async def create_auth_session(request: HTTPConnection, db: AsyncSession, user: U
     await db.refresh(auth_session)
     request.session.clear()
     request.session[SESSION_KEY] = str(auth_session.id)
+    return auth_session.id
 
 
 async def revoke_auth_session(request: HTTPConnection, db: AsyncSession) -> None:
@@ -38,6 +39,12 @@ async def revoke_auth_session(request: HTTPConnection, db: AsyncSession) -> None
     except ValueError:
         return
     if session_id and (auth_session := await db.get(AuthSession, session_id)):
+        await db.delete(auth_session)
+        await db.commit()
+
+
+async def revoke_auth_session_id(db: AsyncSession, session_id: UUID) -> None:
+    if auth_session := await db.get(AuthSession, session_id):
         await db.delete(auth_session)
         await db.commit()
 

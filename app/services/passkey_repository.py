@@ -12,9 +12,13 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import RegistrationMode, settings
 from app.core.database import get_db
-from app.core.security import create_access_token
+from app.core.security import create_access_token, decode_access_token
 from app.models import Passkey, User
-from app.services.auth_sessions import create_auth_session, revoke_auth_session
+from app.services.auth_sessions import (
+    create_auth_session,
+    revoke_auth_session,
+    revoke_auth_session_id,
+)
 
 
 REGISTRATION_ROUTE_SUFFIXES = frozenset(
@@ -72,6 +76,7 @@ class RepperoniPasskeyRepository:
     ) -> None:
         self.db = db
         self.registration_mode = registration_mode or settings.registration_mode
+        self.auth_session_id: UUID | None = None
 
     async def ensure_registration_allowed(self) -> None:
         if self.registration_mode == "open":
@@ -187,14 +192,22 @@ class RepperoniPasskeyRepository:
         await self.db.commit()
 
     async def authenticate(self, request: Request, user: User) -> User:
-        await create_auth_session(request, self.db, user)
+        self.auth_session_id = await create_auth_session(request, self.db, user)
         return user
 
     async def logout(self, request: Request) -> None:
         await revoke_auth_session(request, self.db)
+        authorization = request.headers.get("Authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.casefold() == "bearer" and token:
+            claims = decode_access_token(token)
+            if claims is not None:
+                await revoke_auth_session_id(self.db, claims.session_id)
 
     def access_token(self, user: User) -> str:
-        return create_access_token(user.id)
+        if self.auth_session_id is None:
+            raise RuntimeError("Access token requested before authentication")
+        return create_access_token(user.id, self.auth_session_id)
 
 
 async def get_passkey_repository(

@@ -17,7 +17,12 @@ from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.core.security import TOKEN_ALGORITHM, TOKEN_AUDIENCE, TOKEN_ISSUER, create_access_token
 from app.models import AuthSession, Passkey, User
-from app.services.auth_sessions import SESSION_KEY, get_session_user, revoke_auth_session
+from app.services.auth_sessions import (
+    SESSION_KEY,
+    create_auth_session,
+    get_session_user,
+    revoke_auth_session,
+)
 from app.services.passkey_repository import (
     REGISTRATION_BOOTSTRAP_HEADER,
     RepperoniPasskeyRepository,
@@ -34,7 +39,8 @@ def request_with_session(values=None):
 
 def test_access_token_contains_user_id():
     user_id = uuid.uuid4()
-    token = create_access_token(user_id)
+    session_id = uuid.uuid4()
+    token = create_access_token(user_id, session_id)
     payload = jwt.decode(
         token,
         settings.secret_key_value,
@@ -43,6 +49,7 @@ def test_access_token_contains_user_id():
         issuer=TOKEN_ISSUER,
     )
     assert payload["sub"] == str(user_id)
+    assert payload["sid"] == str(session_id)
     assert payload["iat"] < payload["exp"]
     assert payload["exp"] - payload["iat"] == 60 * 60
 
@@ -372,8 +379,20 @@ def test_bearer_and_optional_auth_dependencies(user):
                 algorithm=TOKEN_ALGORITHM,
             )
             assert await get_optional_current_user(request, db, legacy_token) is None
-            token = create_access_token(user.id)
+            session_id = await create_auth_session(request, db, user)
+            token = create_access_token(user.id, session_id)
             assert (await get_optional_current_user(request, db, token)).id == user.id
+            bearer_request = Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/v1/auth/logout",
+                    "headers": [(b"authorization", f"Bearer {token}".encode())],
+                    "session": {},
+                }
+            )
+            await RepperoniPasskeyRepository(db).logout(bearer_request)
+            assert await get_optional_current_user(request, db, token) is None
         try:
             await get_current_user(None)
         except HTTPException as exc:
