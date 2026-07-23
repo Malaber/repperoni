@@ -243,6 +243,7 @@ def start_app(c, port=8000, e2e=False):
         for suffix in ("", "-wal", "-shm"):
             Path(f"{database}{suffix}").unlink(missing_ok=True)
         environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database}"
+        environment["REGISTRATION_MODE"] = "open"
     log = LOG_FILE.open("w", encoding="utf-8")
     process = subprocess.Popen(
         _uvicorn_command(port),

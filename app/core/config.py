@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEPLOYED_ENVIRONMENTS = {"production", "review"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 PLACEHOLDER_SECRET = "change-me-in-production"
+RegistrationMode = Literal["closed", "first-user", "open"]
 
 
 def _normalized_origin(value: str, *, field_name: str) -> str:
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Repperoni"
     environment: Literal["development", "test", "review", "production"] = "development"
+    registration_mode: RegistrationMode = "first-user"
     app_base_url: str | None = None
     database_url: str = "sqlite+aiosqlite:///./repperoni.db"
     secret_key: str = PLACEHOLDER_SECRET

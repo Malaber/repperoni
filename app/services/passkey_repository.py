@@ -1,17 +1,49 @@
 from datetime import UTC, datetime
+from unicodedata import normalize
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 from fastpasskey import PasskeyConflictError, PasskeyCredential
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import RegistrationMode, settings
 from app.core.database import get_db
 from app.core.security import create_access_token
 from app.models import Passkey, User
 from app.services.auth_sessions import create_auth_session, revoke_auth_session
+
+
+REGISTRATION_ROUTE_SUFFIXES = frozenset(
+    {
+        "/auth/register/options",
+        "/auth/register/verify",
+    }
+)
+
+
+class RegistrationUnavailableError(Exception):
+    """The configured self-registration policy rejected a new account."""
+
+
+def normalize_registration_email(raw_email: str) -> str:
+    email = normalize("NFKC", raw_email).strip().casefold()
+    if not email:
+        raise ValueError("Email is required")
+    if len(email) > 255:
+        raise ValueError("Email must be at most 255 characters")
+    return email
+
+
+def normalize_registration_display_name(raw_name: str) -> str:
+    display_name = " ".join(normalize("NFKC", raw_name).split())
+    if not display_name:
+        raise ValueError("Display name is required")
+    if len(display_name) > 120:
+        raise ValueError("Display name must be at most 120 characters")
+    return display_name
 
 
 def _new_passkey(user_id: UUID | None, name: str, credential: PasskeyCredential) -> Passkey:
@@ -30,10 +62,26 @@ def _new_passkey(user_id: UUID | None, name: str, credential: PasskeyCredential)
 
 
 class RepperoniPasskeyRepository:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        registration_mode: RegistrationMode | None = None,
+    ) -> None:
         self.db = db
+        self.registration_mode = registration_mode or settings.registration_mode
+
+    async def ensure_registration_allowed(self) -> None:
+        if self.registration_mode == "open":
+            return
+        if self.registration_mode == "closed":
+            raise RegistrationUnavailableError
+        existing_user = await self.db.scalar(select(User.id).limit(1))
+        if existing_user is not None:
+            raise RegistrationUnavailableError
 
     async def user_by_email(self, email: str) -> User | None:
+        email = normalize_registration_email(email)
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.passkeys))
@@ -69,7 +117,20 @@ class RepperoniPasskeyRepository:
         passkey_name: str,
         credential: PasskeyCredential,
     ) -> User:
-        user = User(id=user_id, email=email, display_name=display_name)
+        try:
+            await self.ensure_registration_allowed()
+        except RegistrationUnavailableError as exc:
+            raise PasskeyConflictError from exc
+        normalized_email = normalize_registration_email(email)
+        normalized_display_name = normalize_registration_display_name(display_name)
+        first_user = self.registration_mode == "first-user"
+        user = User(
+            id=user_id,
+            email=normalized_email,
+            display_name=normalized_display_name,
+            is_admin=first_user,
+            registration_slot=1 if first_user else None,
+        )
         user.passkeys.append(_new_passkey(None, passkey_name, credential))
         self.db.add(user)
         try:
@@ -134,5 +195,38 @@ class RepperoniPasskeyRepository:
         return create_access_token(user.id)
 
 
-def get_passkey_repository(db: AsyncSession = Depends(get_db)) -> RepperoniPasskeyRepository:
-    return RepperoniPasskeyRepository(db)
+async def get_passkey_repository(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RepperoniPasskeyRepository:
+    repository = RepperoniPasskeyRepository(db)
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", request.url.path)
+    if any(route_path.endswith(suffix) for suffix in REGISTRATION_ROUTE_SUFFIXES):
+        try:
+            await repository.ensure_registration_allowed()
+        except RegistrationUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Registration is not available",
+            ) from exc
+
+        if route_path.endswith("/auth/register/options"):
+            try:
+                payload = await request.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                try:
+                    if isinstance(payload.get("email"), str):
+                        payload["email"] = normalize_registration_email(payload["email"])
+                    if isinstance(payload.get("display_name"), str):
+                        payload["display_name"] = normalize_registration_display_name(
+                            payload["display_name"]
+                        )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=str(exc),
+                    ) from exc
+    return repository
