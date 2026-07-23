@@ -127,8 +127,7 @@ jobs:
         with: {node-version: '${{ env.NODE_VERSION }}'}
       - run: python -m pip install --require-hashes -r requirements-bootstrap.lock
       - run: python -m invoke bootstrap-ci
-      - run: python -m invoke lock-deps
-      - run: git diff --exit-code -- requirements-bootstrap.lock requirements.lock requirements-dev.lock
+      - run: python -m invoke check-locks
       - run: python -m invoke install-js
       - run: python -m invoke security-check
 

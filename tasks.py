@@ -221,6 +221,17 @@ def lock_deps(c):
 
 
 @task
+def check_locks(c):
+    """Regenerate locks and reject version/hash drift across platforms."""
+    lock_deps.body(c)
+    c.run(
+        "git diff --exit-code "
+        "--ignore-matching-lines='^[[:space:]]*#' -- "
+        "requirements-bootstrap.lock requirements.lock requirements-dev.lock"
+    )
+
+
+@task
 def format(c):
     c.run(f"{_bin('black')} app tests tasks.py")
 
