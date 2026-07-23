@@ -116,9 +116,8 @@ class OriginProtectionMiddleware:
             has_csrf_proof = headers.get("x-repperoni-csrf") == "1"
             if (
                 not has_bearer
-                and origin
                 and origin not in self.trusted_origins
-                and not (origin == "null" and has_csrf_proof)
+                and not (origin in {None, "", "null"} and has_csrf_proof)
             ):
                 logger.warning("Blocked unsafe request from untrusted origin %r", origin)
                 await _json_error(

@@ -112,6 +112,7 @@ def test_request_origin_and_body_size_are_enforced(client, user):
     assert blocked.status_code == 403
     assert blocked.json()["detail"] == "Untrusted request origin"
     assert client.post("/logout", headers={"Origin": "null"}).status_code == 403
+    assert client.post("/logout", headers={"Origin": ""}).status_code == 403
 
     same_origin = client.post(
         "/logout",
@@ -125,6 +126,12 @@ def test_request_origin_and_body_size_are_enforced(client, user):
         follow_redirects=False,
     )
     assert csrf_proved.status_code == 303
+    missing_origin_proved = client.post(
+        "/logout",
+        headers={"Origin": "", "X-Repperoni-CSRF": "1"},
+        follow_redirects=False,
+    )
+    assert missing_origin_proved.status_code == 303
 
     native = client.post(
         "/api/v1/workouts",

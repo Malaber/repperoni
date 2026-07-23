@@ -56,6 +56,6 @@ def user() -> User:
 @pytest.fixture
 def client(user: User):
     app.dependency_overrides[get_current_user] = lambda: user
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Origin": "http://localhost"}) as test_client:
         yield test_client
     app.dependency_overrides.clear()
