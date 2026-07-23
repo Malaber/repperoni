@@ -206,6 +206,12 @@ class RepperoniPasskeyRepository:
         new_sign_count: int,
         name: str | None = None,
     ) -> None:
+        if new_sign_count < 0 or (passkey.sign_count > 0 and new_sign_count <= passkey.sign_count):
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Passkey counter did not advance",
+            )
         values: dict[str, object] = {
             "sign_count": new_sign_count,
             "last_used_at": datetime.now(UTC),

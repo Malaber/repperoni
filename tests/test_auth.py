@@ -117,6 +117,14 @@ def test_stale_passkey_counter_cannot_regress_or_mutate(user):
             stored = await db.get(Passkey, passkey_id)
             assert stored.sign_count == 5
             assert stored.name == "Original"
+            with pytest.raises(HTTPException, match="counter did not advance") as captured:
+                await RepperoniPasskeyRepository(db).record_passkey_use(
+                    stored,
+                    new_sign_count=4,
+                )
+            assert captured.value.status_code == 401
+            await db.refresh(stored)
+            assert stored.sign_count == 5
 
     asyncio.run(scenario())
 
