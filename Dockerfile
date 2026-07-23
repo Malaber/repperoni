@@ -1,5 +1,5 @@
-ARG PYTHON_VERSION=3.14
-FROM python:${PYTHON_VERSION}-slim AS base
+ARG PYTHON_IMAGE=python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
+FROM ${PYTHON_IMAGE} AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,11 +14,14 @@ RUN groupadd --gid 10001 app \
     && chown 10001:10001 /data \
     && chmod 0700 /data
 
+COPY requirements.lock ./
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
+
 COPY pyproject.toml README.md ./
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir --no-deps --no-build-isolation .
 
 COPY docker/start.sh ./docker/start.sh
 RUN chown -R app:app /app
@@ -30,9 +33,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
 
 FROM base AS test
 USER root
+COPY requirements-dev.lock ./
 COPY tests ./tests
 COPY tasks.py ./tasks.py
-RUN python -m pip install --no-cache-dir -e '.[dev]'
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements-dev.lock \
+    && python -m pip install --no-cache-dir --no-deps --no-build-isolation -e .
 USER 10001:10001
 RUN python -m pytest
 
