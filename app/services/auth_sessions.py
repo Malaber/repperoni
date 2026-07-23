@@ -61,6 +61,7 @@ async def get_session_user(request: HTTPConnection, db: AsyncSession) -> User | 
     idle_limit = now - timedelta(seconds=settings.session_idle_timeout_seconds)
     if (
         auth_session is None
+        or not auth_session.user.is_active
         or _utc(auth_session.expires_at) <= now
         or _utc(auth_session.last_seen_at) <= idle_limit
     ):

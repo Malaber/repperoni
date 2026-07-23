@@ -54,8 +54,9 @@ class RepperoniPasskeyRepository:
     async def passkey_by_credential_id(self, credential_id: str) -> Passkey | None:
         result = await self.db.execute(
             select(Passkey)
+            .join(Passkey.user)
             .options(selectinload(Passkey.user))
-            .where(Passkey.credential_id == credential_id)
+            .where(Passkey.credential_id == credential_id, User.is_active.is_(True))
         )
         return result.scalar_one_or_none()
 

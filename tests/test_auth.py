@@ -11,7 +11,7 @@ from app.api.deps import get_current_user, get_optional_current_user
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.core.security import create_access_token
-from app.models import AuthSession
+from app.models import AuthSession, Passkey
 from app.services.auth_sessions import SESSION_KEY, get_session_user, revoke_auth_session
 from app.services.passkey_repository import RepperoniPasskeyRepository
 
@@ -115,6 +115,41 @@ def test_invalid_and_expired_sessions_are_cleared(user):
             await revoke_auth_session(empty, db)
             missing = request_with_session({SESSION_KEY: str(uuid.uuid4())})
             await revoke_auth_session(missing, db)
+
+    asyncio.run(scenario())
+
+
+def test_inactive_users_lose_sessions_and_passkey_login(user):
+    async def scenario():
+        async with SessionLocal() as db:
+            auth_session = AuthSession(
+                user_id=user.id,
+                last_seen_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            passkey = Passkey(
+                user_id=user.id,
+                name="Disabled phone",
+                credential_id=f"disabled-{uuid.uuid4()}",
+                public_key=b"not-used",
+                sign_count=0,
+            )
+            db.add_all([auth_session, passkey])
+            await db.commit()
+            await db.refresh(auth_session)
+            await db.refresh(passkey)
+
+            stored_user = await db.get(type(user), user.id)
+            stored_user.is_active = False
+            await db.commit()
+
+            request = request_with_session({SESSION_KEY: str(auth_session.id)})
+            assert await get_session_user(request, db) is None
+            assert not request.session
+            assert await db.get(AuthSession, auth_session.id) is None
+
+            repository = RepperoniPasskeyRepository(db)
+            assert await repository.passkey_by_credential_id(passkey.credential_id) is None
 
     asyncio.run(scenario())
 
