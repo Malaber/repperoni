@@ -159,7 +159,15 @@ def setup_venv(c):
 
 @task
 def install_python(c):
-    c.run(f"{_bin('pip')} install -e '.[dev]'", env=_clean_install_env())
+    environment = _clean_install_env()
+    c.run(
+        f"{_bin('pip')} install --require-hashes -r requirements-dev.lock",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip')} install --no-deps --no-build-isolation -e .",
+        env=environment,
+    )
 
 
 @task
@@ -175,7 +183,41 @@ def install_deps(_):
 
 @task
 def bootstrap_ci(c):
-    c.run(f"{shlex.quote(sys.executable)} -m pip install -e '.[dev]'", env=_clean_install_env())
+    python = shlex.quote(sys.executable)
+    environment = _clean_install_env()
+    c.run(
+        f"{python} -m pip install --require-hashes -r requirements-dev.lock",
+        env=environment,
+    )
+    c.run(
+        f"{python} -m pip install --no-deps --no-build-isolation -e .",
+        env=environment,
+    )
+
+
+@task
+def lock_deps(c):
+    """Regenerate hash-locked bootstrap, production, and development dependencies."""
+    environment = {
+        **_clean_install_env(),
+        "CUSTOM_COMPILE_COMMAND": ".venv/bin/inv lock-deps",
+    }
+    common = "--quiet --generate-hashes --allow-unsafe --strip-extras --newline=lf"
+    c.run(
+        f"{_bin('pip-compile')} {common} --output-file=requirements-bootstrap.lock "
+        "requirements-bootstrap.in",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip-compile')} {common} --build-deps-for=wheel "
+        "--output-file=requirements.lock pyproject.toml",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip-compile')} {common} --build-deps-for=wheel --extra=dev "
+        "--output-file=requirements-dev.lock pyproject.toml",
+        env=environment,
+    )
 
 
 @task
@@ -208,6 +250,28 @@ def check_python(c):
 @task
 def check_js(c):
     c.run("npm run test:js")
+
+
+@task
+def audit_python(c):
+    c.run(
+        f"{_bin('pip-audit')} --requirement requirements.lock "
+        "--disable-pip --require-hashes --strict --progress-spinner=off"
+        " --cache-dir .tmp/pip-audit-cache"
+    )
+
+
+@task
+def bandit_check(c):
+    c.run(f"{_bin('bandit')} --quiet --recursive app")
+
+
+@task
+def security_check(c):
+    """Audit locked Python/Node dependencies and scan Python security patterns."""
+    audit_python.body(c)
+    bandit_check.body(c)
+    c.run("npm audit --audit-level=high")
 
 
 @task

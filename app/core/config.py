@@ -7,7 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEPLOYED_ENVIRONMENTS = {"production", "review"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
-PLACEHOLDER_SECRET = "change-me-in-production"
+# Public sentinel: deployed configuration rejects it.
+PLACEHOLDER_SECRET = "change-me-in-production"  # nosec B105
 RegistrationMode = Literal["closed", "first-user", "open"]
 
 

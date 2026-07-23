@@ -6,9 +6,10 @@ from jose import jwt
 from app.core.config import settings
 
 
-TOKEN_ALGORITHM = "HS256"
-TOKEN_AUDIENCE = "repperoni-api"
-TOKEN_ISSUER = "repperoni"
+# Public JWT metadata, not credentials.
+TOKEN_ALGORITHM = "HS256"  # nosec B105
+TOKEN_AUDIENCE = "repperoni-api"  # nosec B105
+TOKEN_ISSUER = "repperoni"  # nosec B105
 
 
 def create_access_token(user_id: UUID) -> str:
