@@ -263,19 +263,44 @@ def test_statistics_and_exercise_progress(client):
 
 
 def test_cross_user_resources_are_hidden(client, user):
-    exercise = first_exercise(client)
-    workout = start_workout(client)
+    custom = client.post(
+        "/api/v1/exercises",
+        json={"name": "Private Press", "muscle_group": "Core", "equipment": "Pizza"},
+    ).json()
+    workout = add_station(client, start_workout(client), custom)
+    station = workout["stations"][0]
+    set_url = f"/api/v1/workouts/{workout['id']}/stations/{station['id']}/sets"
+    entry = client.post(set_url, json={"weight_kg": 42, "reps": 6}).json()
+
     other = asyncio.run(create_user())
     app.dependency_overrides[get_current_user] = lambda: other
     assert client.get(f"/api/v1/workouts/{workout['id']}").status_code == 404
+    assert all(item["id"] != workout["id"] for item in client.get("/api/v1/workouts").json())
+    assert client.get("/api/v1/workouts/active").json() is None
+    assert all(item["id"] != custom["id"] for item in client.get("/api/v1/exercises").json())
+    assert client.get(f"/api/v1/exercises/{custom['id']}/last-performance").status_code == 404
+    assert client.get(f"/api/v1/stats/exercises/{custom['id']}/progress").status_code == 404
+    overview = client.get("/api/v1/stats/overview").json()
+    assert overview["workout_count"] == 0
+    assert overview["total_sets"] == 0
     assert (
         client.post(
             f"/api/v1/workouts/{workout['id']}/stations",
-            json={"exercise_id": exercise["id"]},
+            json={"exercise_id": custom["id"]},
         ).status_code
         == 404
     )
+    assert (
+        client.patch(
+            f"{set_url}/{entry['id']}",
+            json={"weight_kg": 1},
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"{set_url}/{entry['id']}").status_code == 404
+
     app.dependency_overrides[get_current_user] = lambda: user
+    assert client.get(f"/api/v1/workouts/{workout['id']}").json()["total_sets"] == 1
 
 
 def test_validation_and_missing_resources(client):
