@@ -209,8 +209,8 @@ async def get_passkey_repository(
         if settings.registration_mode == "first-user" and configured_token is not None:
             supplied_token = request.headers.get(REGISTRATION_BOOTSTRAP_HEADER, "")
             if not compare_digest(
-                supplied_token,
-                configured_token.get_secret_value(),
+                supplied_token.encode(),
+                configured_token.get_secret_value().encode(),
             ):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

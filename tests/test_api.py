@@ -86,6 +86,8 @@ def test_registration_ui_follows_bootstrap_policy(client, monkeypatch):
     login = client.get("/login")
     assert 'data-testid="signup-tab"' in login.text
     assert "data-registration-bootstrap-token" in login.text
+    assert 'name="registration_bootstrap_token"' not in login.text
+    assert '<form class="auth-form" method="post" action="/login"' in login.text
 
 
 def test_request_origin_and_body_size_are_enforced(client, user):

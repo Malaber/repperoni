@@ -32,10 +32,10 @@
           {% if registration_open %}<div data-auth-tab-panel="signup" role="tabpanel" aria-labelledby="signup-tab" hidden>
             <p class="eyebrow">First slice is on us</p>
             <h2>Create your account</h2>
-            <form class="auth-form" data-passkey-register>
+            <form class="auth-form" method="post" action="/login" data-passkey-register>
               <label>Your name<input type="text" name="display_name" autocomplete="name" required data-testid="signup-name" /></label>
               <label>Email<input type="email" name="email" autocomplete="username webauthn" required data-testid="signup-email" /></label>
-              {% if registration_token_required %}<label>Setup code<input type="password" name="registration_bootstrap_token" autocomplete="off" required spellcheck="false" data-registration-bootstrap-token data-testid="signup-bootstrap-token" /></label>{% endif %}
+              {% if registration_token_required %}<label>Setup code<input type="password" autocomplete="off" required spellcheck="false" data-registration-bootstrap-token data-testid="signup-bootstrap-token" /></label>{% endif %}
               <button class="primary-button" type="submit" data-passkey-register-button data-testid="signup-submit">Create passkey</button>
             </form>
           </div>{% endif %}
