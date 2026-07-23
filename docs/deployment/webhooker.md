@@ -36,6 +36,23 @@ Enable Dependabot security updates and the dependency graph. Keep the generated 
 the Docker base-image digest under review; CI rejects drift and known high/critical
 vulnerabilities.
 
+## Launch gates
+
+Do not configure `WEBHOOKER_PRODUCTION_WAKE_URL` or
+`WEBHOOKER_PRODUCTION_WEBHOOK_SECRET` until
+[Webhooker issue #17](https://github.com/Malaber/webhooker/issues/17) is resolved, or equivalent
+host-side protection has been verified. Current Webhooker can detect a failed container start,
+but it does not health-gate state changes, preserve one protected pre-deploy backup, and restore
+the previous image/database automatically. Repeated reconciliation after a failed migration can
+otherwise rotate away the last good backup. CI's deployed-revision check detects this failure; it
+cannot safely roll back the host.
+
+Run review apps only on a disposable, dedicated review host until
+[Webhooker issue #18](https://github.com/Malaber/webhooker/issues/18) provides per-review secrets,
+network isolation, and storage quotas. Apply the control-plane limits tracked in
+[Webhooker issue #19](https://github.com/Malaber/webhooker/issues/19) before exposing its wake
+endpoint publicly.
+
 ## Host layout
 
 Copy the Compose and env files to `/srv/repperoni/deploy`, install both project configs in
