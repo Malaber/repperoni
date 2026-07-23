@@ -14,5 +14,7 @@ a later workout, and inspect progress. Screenshots and failure details are writt
 `test-results/` and uploaded by CI.
 
 Use `inv browser-e2e-mobile` while iterating on the gym interface, or `inv check-python` for a
-backend-only edit. Deployment workflow tests are static contract checks; `inv docker-smoke` adds a
-real production-container health check.
+backend-only edit. Run `inv security-check` to query Python and Node advisory databases and scan
+Python source patterns. `inv lock-deps` regenerates all hash-locked dependency files; CI rejects
+lock drift. Deployment workflow tests are static contract checks; `inv docker-smoke` adds a real
+production-container health check.

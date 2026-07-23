@@ -47,8 +47,10 @@ Run `.venv/bin/inv --list` for the canonical list. The important targets are:
 | `migrate` | Upgrade the database to Alembic head |
 | `start` | Run the foreground development server |
 | `start-app`, `wait-for-app`, `stop-app` | Managed local lifecycle for automation |
+| `lock-deps` | Regenerate all hash-locked dependency files |
 | `check-python` | Black, Flake8, and pytest |
 | `check-js` | JavaScript unit and coverage gate |
+| `security-check` | Audit locked dependencies and Python security patterns |
 | `browser-e2e-desktop`, `browser-e2e-mobile` | Real Chromium + virtual-passkey user journeys |
 | `verify` | Full local gate matching CI |
 | `docker-build`, `docker-build-test`, `docker-smoke` | Container build and black-box checks |
@@ -61,9 +63,11 @@ points.
 
 CI tests Python, JavaScript, desktop, and phone flows before publishing the immutable
 `sha-<full-sha>` multi-architecture image. PR review apps are isolated at
-`https://pr-<number>.pr.repperoni.malaber.de`; production is
+`https://pr-<number>.repperoni-review.malaber.de`; production is
 `https://repperoni.malaber.de`. Releases promote the already-tested image rather than rebuilding
-it. See [Webhooker deployment](docs/deployment/webhooker.md).
+it. Production registration defaults to `first-user`: one account may bootstrap an empty
+database, then registration closes automatically. See
+[Webhooker deployment](docs/deployment/webhooker.md).
 
 ## Project layout
 
