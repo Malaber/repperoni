@@ -8,6 +8,7 @@ from jose import jwt
 from starlette.requests import Request
 
 from app.api.deps import get_current_user, get_optional_current_user
+from app.api.v1.routes.auth import SAFE_ROUTE_PATHS, passkey_router
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.core.security import create_access_token
@@ -166,6 +167,19 @@ def test_passkey_options_endpoint_uses_shared_module(client):
     login = client.post("/api/v1/auth/login/options", json={})
     assert login.status_code == 200
     assert "challenge" in login.json()
+
+
+def test_unprotected_passkey_enrollment_routes_are_not_exposed(client):
+    exposed_paths = {route.path for route in passkey_router().routes}
+    assert exposed_paths == SAFE_ROUTE_PATHS
+    assert client.post("/api/v1/auth/settings/passkey/options").status_code == 404
+    assert (
+        client.post(
+            "/api/v1/auth/passkeys/register/options",
+            json={"name": "Attacker passkey"},
+        ).status_code
+        == 404
+    )
 
 
 def test_bearer_and_optional_auth_dependencies(user):
