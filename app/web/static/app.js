@@ -170,6 +170,15 @@ async function startWorkout(name) {
 }
 
 function bindEvents() {
+  document.querySelector("[data-logout-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await fetch("/logout", {method: "POST", headers: {"X-Repperoni-CSRF": "1"}});
+      window.location.assign("/login");
+    } catch (error) {
+      handleError(error);
+    }
+  });
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;

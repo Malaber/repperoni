@@ -45,9 +45,6 @@
         </div>
       </section>
     </main>
-    <script type="module">
-      import { initFastPasskey } from "/api/v1/auth/assets/fastpasskey.js";
-      initFastPasskey({ translate: (_key, _values, fallback) => fallback });
-    </script>
+    <script type="module" src="/static/login.js?v={{ asset_version }}"></script>
   </body>
 </html>

@@ -3,6 +3,7 @@ import uuid
 
 from app.api.deps import get_current_user, get_optional_current_user
 from app.core.config import settings
+from app.core.security import create_access_token
 from app.main import app
 from tests.conftest import create_user
 
@@ -31,9 +32,16 @@ def add_station(client, workout, exercise):
 
 def test_health_and_auth_guards(client):
     app.dependency_overrides.clear()
-    assert client.get("/health").json() == {"status": "ok"}
+    health = client.get("/health")
+    assert health.json() == {"status": "ok"}
+    assert health.headers["x-content-type-options"] == "nosniff"
+    assert health.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in health.headers["content-security-policy"]
+    assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/").status_code == 200
-    assert client.get("/api/v1/exercises").status_code == 401
+    unauthorized = client.get("/api/v1/exercises")
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["cache-control"] == "private, no-store"
     assert client.get("/apple-app-site-association").status_code == 404
 
 
@@ -46,10 +54,56 @@ def test_authenticated_web_shell_and_public_assets(client, user):
 
     app.dependency_overrides[get_optional_current_user] = lambda: None
     assert 'data-next-url="/"' in client.get("/login?next=//evil.example").text
+    assert 'data-next-url="/"' in client.get("/login?next=%2F%5Cevil.example").text
+    login = client.get("/login")
+    assert '<script type="module" src=' in login.text
+    assert login.headers["cache-control"] == "private, no-store"
+    assert (
+        "unsafe-inline"
+        not in login.headers["content-security-policy"].split("script-src", 1)[1].split(";", 1)[0]
+    )
     settings.webcredentials_apps = ["TEAM.de.malaber.repperoni"]
     association = client.get("/.well-known/apple-app-site-association")
     assert association.json()["webcredentials"]["apps"] == ["TEAM.de.malaber.repperoni"]
     settings.webcredentials_apps = []
+
+
+def test_request_origin_and_body_size_are_enforced(client, user):
+    blocked = client.post("/logout", headers={"Origin": "https://evil.example"})
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"] == "Untrusted request origin"
+    assert client.post("/logout", headers={"Origin": "null"}).status_code == 403
+
+    same_origin = client.post(
+        "/logout",
+        headers={"Origin": "http://localhost"},
+        follow_redirects=False,
+    )
+    assert same_origin.status_code == 303
+    csrf_proved = client.post(
+        "/logout",
+        headers={"Origin": "null", "X-Repperoni-CSRF": "1"},
+        follow_redirects=False,
+    )
+    assert csrf_proved.status_code == 303
+
+    native = client.post(
+        "/api/v1/workouts",
+        json={"name": "Native workout"},
+        headers={
+            "Authorization": f"Bearer {create_access_token(user.id)}",
+            "Origin": "https://native.example",
+        },
+    )
+    assert native.status_code == 201
+
+    oversized = client.post(
+        "/api/v1/workouts",
+        content=b"x" * (settings.max_request_body_bytes + 1),
+        headers={"Content-Type": "application/json"},
+    )
+    assert oversized.status_code == 413
+    assert oversized.json()["detail"] == "Request body too large"
 
 
 def test_exercise_catalog_search_and_custom_exercises(client):

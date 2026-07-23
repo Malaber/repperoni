@@ -22,7 +22,7 @@ static_root = Path("app/web/static")
 @lru_cache(maxsize=1)
 def asset_version() -> str:
     digest = hashlib.sha256()
-    for filename in ("app.css", "app.js", "helpers.js", "service-worker.js"):
+    for filename in ("app.css", "app.js", "helpers.js", "login.js", "service-worker.js"):
         path = static_root / filename
         if path.exists():
             digest.update(path.read_bytes())
@@ -45,7 +45,12 @@ async def login(request: Request, user: User | None = Depends(get_optional_curre
     if user is not None:
         return RedirectResponse("/", status_code=303)
     next_url = request.query_params.get("next", "/")
-    if not next_url.startswith("/") or next_url.startswith("//"):
+    if (
+        not next_url.startswith("/")
+        or next_url.startswith("//")
+        or "\\" in next_url
+        or any(ord(character) < 32 for character in next_url)
+    ):
         next_url = "/"
     return templates.TemplateResponse(
         request,
