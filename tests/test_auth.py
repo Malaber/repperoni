@@ -80,6 +80,47 @@ def test_passkey_repository_lifecycle(user):
     asyncio.run(scenario())
 
 
+def test_stale_passkey_counter_cannot_regress_or_mutate(user):
+    async def scenario():
+        async with SessionLocal() as db:
+            created = await RepperoniPasskeyRepository(db).add_passkey(
+                user_id=user.id,
+                name="Original",
+                credential=PasskeyCredential(
+                    f"counter-{uuid.uuid4()}",
+                    b"public-key",
+                    4,
+                ),
+            )
+            passkey_id = created.id
+
+        async with SessionLocal() as db:
+            stale = await db.get(Passkey, passkey_id)
+
+        async with SessionLocal() as db:
+            current = await db.get(Passkey, passkey_id)
+            await RepperoniPasskeyRepository(db).record_passkey_use(
+                current,
+                new_sign_count=5,
+            )
+
+        async with SessionLocal() as db:
+            with pytest.raises(HTTPException, match="changed during verification") as captured:
+                await RepperoniPasskeyRepository(db).rename_passkey(
+                    stale,
+                    name="Attacker rename",
+                    new_sign_count=6,
+                )
+            assert captured.value.status_code == 409
+
+        async with SessionLocal() as db:
+            stored = await db.get(Passkey, passkey_id)
+            assert stored.sign_count == 5
+            assert stored.name == "Original"
+
+    asyncio.run(scenario())
+
+
 def test_passkey_repository_registration_replace_and_delete():
     async def scenario():
         async with SessionLocal() as db:

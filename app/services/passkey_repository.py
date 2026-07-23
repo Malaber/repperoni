@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastpasskey import PasskeyConflictError, PasskeyCredential
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -199,15 +199,46 @@ class RepperoniPasskeyRepository:
         await self.db.refresh(record)
         return record
 
+    async def _stage_verified_passkey_use(
+        self,
+        passkey: Passkey,
+        *,
+        new_sign_count: int,
+        name: str | None = None,
+    ) -> None:
+        values: dict[str, object] = {
+            "sign_count": new_sign_count,
+            "last_used_at": datetime.now(UTC),
+        }
+        if name is not None:
+            values["name"] = name
+        result = await self.db.execute(
+            update(Passkey)
+            .where(
+                Passkey.id == passkey.id,
+                Passkey.sign_count == passkey.sign_count,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Passkey changed during verification; try again",
+            )
+
     async def record_passkey_use(self, passkey: Passkey, *, new_sign_count: int) -> None:
-        passkey.sign_count = new_sign_count
-        passkey.last_used_at = datetime.now(UTC)
+        await self._stage_verified_passkey_use(passkey, new_sign_count=new_sign_count)
         await self.db.commit()
+        await self.db.refresh(passkey)
 
     async def rename_passkey(self, passkey: Passkey, *, name: str, new_sign_count: int) -> Passkey:
-        passkey.name = name
-        passkey.sign_count = new_sign_count
-        passkey.last_used_at = datetime.now(UTC)
+        await self._stage_verified_passkey_use(
+            passkey,
+            name=name,
+            new_sign_count=new_sign_count,
+        )
         await self.db.commit()
         await self.db.refresh(passkey)
         return passkey
@@ -215,9 +246,10 @@ class RepperoniPasskeyRepository:
     async def delete_passkey(
         self, *, user_id: UUID, passkey_id: UUID, confirming_passkey: Passkey, new_sign_count: int
     ) -> None:
-        confirming_passkey.sign_count = new_sign_count
-        confirming_passkey.last_used_at = datetime.now(UTC)
-        await self.db.flush()
+        await self._stage_verified_passkey_use(
+            confirming_passkey,
+            new_sign_count=new_sign_count,
+        )
         await self.db.execute(
             delete(Passkey).where(Passkey.id == passkey_id, Passkey.user_id == user_id)
         )
