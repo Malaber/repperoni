@@ -7,9 +7,11 @@ from pathlib import Path
 
 TEST_DATABASE = Path(tempfile.gettempdir()) / f"repperoni-pytest-{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE}"
+os.environ["ENVIRONMENT"] = "test"
+os.environ["REGISTRATION_MODE"] = "open"
 os.environ["APP_BASE_URL"] = "http://localhost"
 os.environ["WEBAUTHN_RP_ID"] = "localhost"
-os.environ["SECRET_KEY"] = "repperoni-pytest-secret"
+os.environ["SECRET_KEY"] = "repperoni-pytest-secret-not-for-production"
 os.environ["AUTO_MIGRATE"] = "false"
 
 import pytest  # noqa: E402
@@ -54,6 +56,6 @@ def user() -> User:
 @pytest.fixture
 def client(user: User):
     app.dependency_overrides[get_current_user] = lambda: user
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Origin": "http://localhost"}) as test_client:
         yield test_client
     app.dependency_overrides.clear()

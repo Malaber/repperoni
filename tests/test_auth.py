@@ -1,19 +1,37 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
-from fastpasskey import PasskeyCredential
+import jwt
+import pytest
+from fastpasskey import PasskeyConflictError, PasskeyCredential
 from fastapi import HTTPException
-from jose import jwt
+from pydantic import SecretStr, ValidationError
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from starlette.requests import Request
 
 from app.api.deps import get_current_user, get_optional_current_user
+from app.api.v1.routes.auth import SAFE_ROUTE_PATHS, passkey_router
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
-from app.models import AuthSession
-from app.services.auth_sessions import SESSION_KEY, get_session_user, revoke_auth_session
-from app.services.passkey_repository import RepperoniPasskeyRepository
+from app.core.security import TOKEN_ALGORITHM, TOKEN_AUDIENCE, TOKEN_ISSUER, create_access_token
+from app.models import AuthSession, Passkey, User
+from app.services.auth_sessions import (
+    SESSION_KEY,
+    create_auth_session,
+    get_session_user,
+    revoke_auth_session,
+)
+from app.services.passkey_repository import (
+    REGISTRATION_BOOTSTRAP_HEADER,
+    VERIFY_ROUTE_SESSION_KEYS,
+    RepperoniPasskeyRepository,
+    get_passkey_repository,
+    normalize_registration_display_name,
+    normalize_registration_email,
+)
 
 
 def request_with_session(values=None):
@@ -24,9 +42,19 @@ def request_with_session(values=None):
 
 def test_access_token_contains_user_id():
     user_id = uuid.uuid4()
-    token = create_access_token(user_id)
-    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    session_id = uuid.uuid4()
+    token = create_access_token(user_id, session_id)
+    payload = jwt.decode(
+        token,
+        settings.secret_key_value,
+        algorithms=[TOKEN_ALGORITHM],
+        audience=TOKEN_AUDIENCE,
+        issuer=TOKEN_ISSUER,
+    )
     assert payload["sub"] == str(user_id)
+    assert payload["sid"] == str(session_id)
+    assert payload["iat"] < payload["exp"]
+    assert payload["exp"] - payload["iat"] == 60 * 60
 
 
 def test_passkey_repository_lifecycle(user):
@@ -52,6 +80,55 @@ def test_passkey_repository_lifecycle(user):
     asyncio.run(scenario())
 
 
+def test_stale_passkey_counter_cannot_regress_or_mutate(user):
+    async def scenario():
+        async with SessionLocal() as db:
+            created = await RepperoniPasskeyRepository(db).add_passkey(
+                user_id=user.id,
+                name="Original",
+                credential=PasskeyCredential(
+                    f"counter-{uuid.uuid4()}",
+                    b"public-key",
+                    4,
+                ),
+            )
+            passkey_id = created.id
+
+        async with SessionLocal() as db:
+            stale = await db.get(Passkey, passkey_id)
+
+        async with SessionLocal() as db:
+            current = await db.get(Passkey, passkey_id)
+            await RepperoniPasskeyRepository(db).record_passkey_use(
+                current,
+                new_sign_count=5,
+            )
+
+        async with SessionLocal() as db:
+            with pytest.raises(HTTPException, match="changed during verification") as captured:
+                await RepperoniPasskeyRepository(db).rename_passkey(
+                    stale,
+                    name="Attacker rename",
+                    new_sign_count=6,
+                )
+            assert captured.value.status_code == 409
+
+        async with SessionLocal() as db:
+            stored = await db.get(Passkey, passkey_id)
+            assert stored.sign_count == 5
+            assert stored.name == "Original"
+            with pytest.raises(HTTPException, match="counter did not advance") as captured:
+                await RepperoniPasskeyRepository(db).record_passkey_use(
+                    stored,
+                    new_sign_count=4,
+                )
+            assert captured.value.status_code == 401
+            await db.refresh(stored)
+            assert stored.sign_count == 5
+
+    asyncio.run(scenario())
+
+
 def test_passkey_repository_registration_replace_and_delete():
     async def scenario():
         async with SessionLocal() as db:
@@ -60,12 +137,15 @@ def test_passkey_repository_registration_replace_and_delete():
             first = PasskeyCredential("registered-1", b"first-key", 0)
             registered = await repository.register_user(
                 user_id=user_id,
-                email=f"{user_id}@example.com",
-                display_name="Registered Lifter",
+                email=f"  {user_id}@EXAMPLE.COM ",
+                display_name="  Registered   Lifter  ",
                 passkey_name="Phone",
                 credential=first,
             )
             assert registered.id == user_id
+            assert registered.email == f"{user_id}@example.com"
+            assert registered.display_name == "Registered Lifter"
+            assert (await repository.user_by_email(f"{user_id}@EXAMPLE.COM")).id == user_id
             assert (await repository.user_by_id(user_id)).passkeys[0].name == "Phone"
 
             second = PasskeyCredential("registered-2", b"second-key", 1)
@@ -90,6 +170,81 @@ def test_passkey_repository_registration_replace_and_delete():
             assert [item.name for item in loaded.passkeys] == ["Laptop"]
 
     asyncio.run(scenario())
+
+
+def test_first_user_registration_is_admin_and_single_use():
+    async def scenario():
+        async with SessionLocal() as db:
+            await db.execute(delete(User))
+            await db.commit()
+            repository = RepperoniPasskeyRepository(db, registration_mode="first-user")
+            first_id = uuid.uuid4()
+            first = await repository.register_user(
+                user_id=first_id,
+                email="owner@example.com",
+                display_name="Gym Owner",
+                passkey_name="Phone",
+                credential=PasskeyCredential("first-owner-key", b"first-key", 0),
+            )
+            assert first.is_admin is True
+            assert first.registration_slot == 1
+
+            with pytest.raises(PasskeyConflictError):
+                await repository.register_user(
+                    user_id=uuid.uuid4(),
+                    email="second@example.com",
+                    display_name="Second Lifter",
+                    passkey_name="Phone",
+                    credential=PasskeyCredential("second-owner-key", b"second-key", 0),
+                )
+
+    asyncio.run(scenario())
+
+
+def test_registration_slot_constraints_close_the_first_user_race():
+    async def scenario():
+        async with SessionLocal() as db:
+            await db.execute(delete(User))
+            await db.commit()
+            db.add_all(
+                [
+                    User(
+                        email="first-racer@example.com",
+                        display_name="First",
+                        registration_slot=1,
+                    ),
+                    User(
+                        email="second-racer@example.com",
+                        display_name="Second",
+                        registration_slot=1,
+                    ),
+                ]
+            )
+            with pytest.raises(IntegrityError):
+                await db.commit()
+            await db.rollback()
+
+            db.add(
+                User(
+                    email="invalid-slot@example.com",
+                    display_name="Invalid",
+                    registration_slot=2,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await db.commit()
+            await db.rollback()
+
+    asyncio.run(scenario())
+
+
+def test_registration_identity_normalization_and_bounds():
+    assert normalize_registration_email("  LIFTER@Example.COM ") == "lifter@example.com"
+    assert normalize_registration_display_name("  Pepper\n  Lifter  ") == "Pepper Lifter"
+    with pytest.raises(ValueError, match="255"):
+        normalize_registration_email(f"{'a' * 244}@example.com")
+    with pytest.raises(ValueError, match="120"):
+        normalize_registration_display_name("x" * 121)
 
 
 def test_invalid_and_expired_sessions_are_cleared(user):
@@ -119,18 +274,165 @@ def test_invalid_and_expired_sessions_are_cleared(user):
     asyncio.run(scenario())
 
 
+def test_inactive_users_lose_sessions_and_passkey_login(user):
+    async def scenario():
+        async with SessionLocal() as db:
+            auth_session = AuthSession(
+                user_id=user.id,
+                last_seen_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            passkey = Passkey(
+                user_id=user.id,
+                name="Disabled phone",
+                credential_id=f"disabled-{uuid.uuid4()}",
+                public_key=b"not-used",
+                sign_count=0,
+            )
+            db.add_all([auth_session, passkey])
+            await db.commit()
+            await db.refresh(auth_session)
+            await db.refresh(passkey)
+
+            stored_user = await db.get(type(user), user.id)
+            stored_user.is_active = False
+            await db.commit()
+
+            request = request_with_session({SESSION_KEY: str(auth_session.id)})
+            assert await get_session_user(request, db) is None
+            assert not request.session
+            assert await db.get(AuthSession, auth_session.id) is None
+
+            repository = RepperoniPasskeyRepository(db)
+            assert await repository.passkey_by_credential_id(passkey.credential_id) is None
+
+    asyncio.run(scenario())
+
+
 def test_passkey_options_endpoint_uses_shared_module(client):
+    email = f"{uuid.uuid4()}@EXAMPLE.COM"
     response = client.post(
         "/api/v1/auth/register/options",
-        json={"email": f"{uuid.uuid4()}@example.com", "display_name": "Pepper"},
+        json={"email": f"  {email} ", "display_name": "  Pepper   Grinder  "},
     )
     assert response.status_code == 200
     assert response.json()["rp"]["name"] == "Repperoni"
     assert response.json()["rp"]["id"] == "localhost"
+    assert response.json()["user"]["name"] == email.casefold()
+    assert response.json()["user"]["displayName"] == "Pepper Grinder"
 
     login = client.post("/api/v1/auth/login/options", json={})
     assert login.status_code == 200
     assert "challenge" in login.json()
+
+
+def test_passkey_verification_ceremonies_are_single_use():
+    async def scenario():
+        route_path = "/api/v1/auth/login/verify"
+        session_key = VERIFY_ROUTE_SESSION_KEYS["/auth/login/verify"]
+        state = {"challenge": f"challenge-{uuid.uuid4()}"}
+        request = request_with_session({session_key: state})
+        request.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            await get_passkey_repository(request, db)
+        replay = request_with_session({session_key: state})
+        replay.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            with pytest.raises(HTTPException, match="already used") as captured:
+                await get_passkey_repository(replay, db)
+            assert captured.value.status_code == 400
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("registration_mode", ["closed", "first-user"])
+def test_registration_policy_blocks_unavailable_registration(
+    client,
+    monkeypatch,
+    registration_mode,
+):
+    monkeypatch.setattr(settings, "registration_mode", registration_mode)
+    response = client.post(
+        "/api/v1/auth/register/options",
+        json={"email": f"{uuid.uuid4()}@example.com", "display_name": "Pepper"},
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Registration is not available"}
+    verify = client.post(
+        "/api/v1/auth/register/verify",
+        json={"credential": {}},
+    )
+    assert verify.status_code == 403
+    assert verify.json() == {"detail": "Registration is not available"}
+
+
+def test_registration_options_reject_unbounded_identity(client):
+    display_name = client.post(
+        "/api/v1/auth/register/options",
+        json={"email": f"{uuid.uuid4()}@example.com", "display_name": "x" * 121},
+    )
+    assert display_name.status_code == 422
+    assert display_name.json() == {"detail": "Display name must be at most 120 characters"}
+
+    email = client.post(
+        "/api/v1/auth/register/options",
+        json={"email": f"{'a' * 244}@example.com", "display_name": "Pepper"},
+    )
+    assert email.status_code == 422
+
+
+def test_first_user_api_requires_bootstrap_token(client, monkeypatch):
+    async def allow_empty_database(_):
+        return None
+
+    monkeypatch.setattr(settings, "registration_mode", "first-user")
+    monkeypatch.setattr(settings, "registration_bootstrap_token", SecretStr("b" * 32))
+    monkeypatch.setattr(
+        RepperoniPasskeyRepository,
+        "ensure_registration_allowed",
+        allow_empty_database,
+    )
+    payload = {
+        "email": f"{uuid.uuid4()}@example.com",
+        "display_name": "Pepper Owner",
+    }
+
+    assert client.post("/api/v1/auth/register/options", json=payload).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/auth/register/options",
+            json=payload,
+            headers={REGISTRATION_BOOTSTRAP_HEADER: "wrong"},
+        ).status_code
+        == 403
+    )
+    allowed = client.post(
+        "/api/v1/auth/register/options",
+        json=payload,
+        headers={REGISTRATION_BOOTSTRAP_HEADER: "b" * 32},
+    )
+    assert allowed.status_code == 200
+
+    assert client.post("/api/v1/auth/register/verify", json={"credential": {}}).status_code == 403
+    passed_gate = client.post(
+        "/api/v1/auth/register/verify",
+        json={"credential": {}},
+        headers={REGISTRATION_BOOTSTRAP_HEADER: "b" * 32},
+    )
+    assert passed_gate.status_code != 403
+
+
+def test_unprotected_passkey_enrollment_routes_are_not_exposed(client):
+    exposed_paths = {route.path for route in passkey_router().routes}
+    assert exposed_paths == SAFE_ROUTE_PATHS
+    assert client.post("/api/v1/auth/settings/passkey/options").status_code == 404
+    assert (
+        client.post(
+            "/api/v1/auth/passkeys/register/options",
+            json={"name": "Attacker passkey"},
+        ).status_code
+        == 404
+    )
 
 
 def test_bearer_and_optional_auth_dependencies(user):
@@ -139,8 +441,29 @@ def test_bearer_and_optional_auth_dependencies(user):
         async with SessionLocal() as db:
             assert await get_optional_current_user(request, db, None) is None
             assert await get_optional_current_user(request, db, "not-a-jwt") is None
-            token = create_access_token(user.id)
+            legacy_token = jwt.encode(
+                {
+                    "sub": str(user.id),
+                    "exp": datetime.now(UTC) + timedelta(minutes=5),
+                },
+                settings.secret_key_value,
+                algorithm=TOKEN_ALGORITHM,
+            )
+            assert await get_optional_current_user(request, db, legacy_token) is None
+            session_id = await create_auth_session(request, db, user)
+            token = create_access_token(user.id, session_id)
             assert (await get_optional_current_user(request, db, token)).id == user.id
+            bearer_request = Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/v1/auth/logout",
+                    "headers": [(b"authorization", f"Bearer {token}".encode())],
+                    "session": {},
+                }
+            )
+            await RepperoniPasskeyRepository(db).logout(bearer_request)
+            assert await get_optional_current_user(request, db, token) is None
         try:
             await get_current_user(None)
         except HTTPException as exc:
@@ -153,10 +476,121 @@ def test_bearer_and_optional_auth_dependencies(user):
 
 def test_settings_normalize_urls_and_lists():
     configured = Settings(
+        _env_file=None,
         app_base_url="https://repperoni.example/",
         cors_origins="https://ios.example, https://web.example",
+        webauthn_rp_id="repperoni.example",
         webcredentials_apps="TEAM.app",
     )
     assert configured.app_base_url == "https://repperoni.example"
     assert configured.cors_origins == ["https://ios.example", "https://web.example"]
     assert configured.webcredentials_apps == ["TEAM.app"]
+
+
+def test_registration_mode_defaults_to_first_user(monkeypatch):
+    monkeypatch.delenv("REGISTRATION_MODE")
+    assert Settings(_env_file=None).registration_mode == "first-user"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, registration_mode="invite-only")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"secret_key": "short"},
+        {"secret_key": "replace-with-a-long-random-value"},
+        {"secret_key": "repperoni-local-e2e-secret"},
+        {"secret_key": "repperoni-local-e2e-secret-not-for-production"},
+        {"secure_cookies": False},
+        {"app_base_url": "http://repperoni.example"},
+        {"app_base_url": None},
+        {"webauthn_rp_id": None},
+        {"registration_bootstrap_token": None},
+        {"registration_bootstrap_token": "short"},
+        {"cors_origins": "http://native.example"},
+    ],
+)
+def test_deployed_settings_fail_closed(override):
+    values = {
+        "_env_file": None,
+        "environment": "production",
+        "app_base_url": "https://repperoni.example",
+        "secret_key": "s" * 32,
+        "secure_cookies": True,
+        "webauthn_rp_id": "repperoni.example",
+        "registration_mode": "first-user",
+        "registration_bootstrap_token": "b" * 32,
+    }
+    values.update(override)
+    with pytest.raises(ValidationError):
+        Settings(**values)
+
+
+def test_settings_hide_secrets_in_validation_errors():
+    secret_marker = "secret-marker-" + ("x" * 32)
+    bootstrap_marker = "bootstrap-marker-" + ("y" * 32)
+    with pytest.raises(ValidationError) as captured:
+        Settings(
+            _env_file=None,
+            environment="production",
+            registration_mode="first-user",
+            registration_bootstrap_token=bootstrap_marker,
+            app_base_url="https://repperoni.example",
+            secret_key=secret_marker,
+            secure_cookies=False,
+            webauthn_rp_id="repperoni.example",
+        )
+    message = str(captured.value)
+    assert secret_marker not in message
+    assert bootstrap_marker not in message
+
+
+def test_bearer_lifetime_is_capped_at_one_hour():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, access_token_expire_minutes=61)
+
+
+def test_deployed_settings_lock_cookie_host_and_origin():
+    configured = Settings(
+        _env_file=None,
+        environment="review",
+        app_base_url="https://pr-12.pr.repperoni.example",
+        secret_key="s" * 32,
+        secure_cookies=True,
+        webauthn_rp_id="pr.repperoni.example",
+        registration_mode="open",
+        cors_origins="https://native.example",
+    )
+    assert configured.deployed is True
+    assert configured.session_cookie_name == "__Host-repperoni-session"
+    assert configured.trusted_hosts == [
+        "127.0.0.1",
+        "localhost",
+        "pr-12.pr.repperoni.example",
+    ]
+    assert configured.trusted_origins == {
+        "https://native.example",
+        "https://pr-12.pr.repperoni.example",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("app_base_url", "https://user:secret@repperoni.example"),
+        ("app_base_url", "https://repperoni.example/path"),
+        ("cors_origins", "*"),
+        ("cors_origins", "https://cors.example/path"),
+        ("webauthn_rp_id", "https://repperoni.example"),
+        ("webauthn_rp_id", "evil.example"),
+    ],
+)
+def test_settings_reject_ambiguous_security_origins(field, value):
+    arguments = {
+        "_env_file": None,
+        "app_base_url": "https://repperoni.example",
+        "webauthn_rp_id": "repperoni.example",
+        field: value,
+    }
+    with pytest.raises(ValidationError):
+        Settings(**arguments)

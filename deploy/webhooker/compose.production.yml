@@ -1,7 +1,25 @@
 services:
   app:
     image: ${APP_IMAGE}
+    pull_policy: always
     restart: unless-stopped
+    user: "10001:10001"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file:
       - ./env/production.common.env
       - ../secrets/production.env
@@ -23,12 +41,17 @@ services:
       - traefik.http.routers.${TRAEFIK_ROUTER}.rule=Host(`${APP_HOSTNAME}`)
       - traefik.http.routers.${TRAEFIK_ROUTER}.entrypoints=websecure
       - traefik.http.routers.${TRAEFIK_ROUTER}.tls.certresolver=${TRAEFIK_CERTRESOLVER}
+      - traefik.http.routers.${TRAEFIK_ROUTER}.middlewares=${TRAEFIK_ROUTER}-body@docker,${TRAEFIK_ROUTER}-rate@docker
+      - traefik.http.middlewares.${TRAEFIK_ROUTER}-body.buffering.maxRequestBodyBytes=65536
+      - traefik.http.middlewares.${TRAEFIK_ROUTER}-rate.ratelimit.average=20
+      - traefik.http.middlewares.${TRAEFIK_ROUTER}-rate.ratelimit.period=1s
+      - traefik.http.middlewares.${TRAEFIK_ROUTER}-rate.ratelimit.burst=40
       - traefik.http.services.${TRAEFIK_SERVICE}.loadbalancer.server.port=8000
+      - traefik.docker.network=repperoni_traefik_external
     networks:
-      - default
       - traefik
 
 networks:
   traefik:
-    name: system_traefik_external
+    name: repperoni_traefik_external
     external: true

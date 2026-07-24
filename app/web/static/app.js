@@ -170,6 +170,19 @@ async function startWorkout(name) {
 }
 
 function bindEvents() {
+  const logoutForm = document.querySelector("[data-logout-form]");
+  if (logoutForm) {
+    logoutForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await fetch("/logout", {method: "POST", headers: {"X-Repperoni-CSRF": "1"}});
+        window.location.assign("/login");
+      } catch (error) {
+        handleError(error);
+      }
+    });
+    logoutForm.querySelector('button[type="submit"]')?.removeAttribute("disabled");
+  }
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;

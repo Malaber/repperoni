@@ -11,6 +11,5 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 
 "$PYTHON_BIN" -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install invoke
+.venv/bin/python -m pip install --require-hashes -r requirements-bootstrap.lock
 .venv/bin/inv install-deps

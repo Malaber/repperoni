@@ -1,9 +1,15 @@
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
+
+from pydantic import SecretStr
 
 from app.api.deps import get_current_user, get_optional_current_user
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.core.security import create_access_token
 from app.main import app
+from app.models import AuthSession
 from tests.conftest import create_user
 
 
@@ -29,27 +35,123 @@ def add_station(client, workout, exercise):
     return response.json()
 
 
+async def bearer_token_for(user):
+    now = datetime.now(UTC)
+    async with SessionLocal() as db:
+        auth_session = AuthSession(
+            user_id=user.id,
+            last_seen_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        db.add(auth_session)
+        await db.commit()
+        await db.refresh(auth_session)
+        return create_access_token(user.id, auth_session.id)
+
+
 def test_health_and_auth_guards(client):
     app.dependency_overrides.clear()
-    assert client.get("/health").json() == {"status": "ok"}
+    health = client.get("/health")
+    assert health.json() == {"status": "ok"}
+    assert client.get("/health/version").json() == {
+        "status": "ok",
+        "version": "dev",
+        "revision": "unknown",
+    }
+    assert health.headers["x-content-type-options"] == "nosniff"
+    assert health.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in health.headers["content-security-policy"]
+    assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/").status_code == 200
-    assert client.get("/api/v1/exercises").status_code == 401
+    unauthorized = client.get("/api/v1/exercises")
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["cache-control"] == "private, no-store"
     assert client.get("/apple-app-site-association").status_code == 404
 
 
 def test_authenticated_web_shell_and_public_assets(client, user):
     app.dependency_overrides[get_optional_current_user] = lambda: user
-    assert "Ready to get" in client.get("/").text
+    shell = client.get("/")
+    assert "Ready to get" in shell.text
+    assert 'aria-label="Sign out" title="Sign out" disabled' in shell.text
     assert client.get("/login", follow_redirects=False).headers["location"] == "/"
     assert client.get("/manifest.webmanifest").status_code == 200
     assert client.get("/service-worker.js").headers["cache-control"] == "no-cache"
 
     app.dependency_overrides[get_optional_current_user] = lambda: None
     assert 'data-next-url="/"' in client.get("/login?next=//evil.example").text
+    assert 'data-next-url="/"' in client.get("/login?next=%2F%5Cevil.example").text
+    login = client.get("/login")
+    assert '<script type="module" src=' in login.text
+    assert login.headers["cache-control"] == "private, no-store"
+    assert (
+        "unsafe-inline"
+        not in login.headers["content-security-policy"].split("script-src", 1)[1].split(";", 1)[0]
+    )
     settings.webcredentials_apps = ["TEAM.de.malaber.repperoni"]
     association = client.get("/.well-known/apple-app-site-association")
     assert association.json()["webcredentials"]["apps"] == ["TEAM.de.malaber.repperoni"]
     settings.webcredentials_apps = []
+
+
+def test_registration_ui_follows_bootstrap_policy(client, monkeypatch):
+    app.dependency_overrides[get_optional_current_user] = lambda: None
+
+    monkeypatch.setattr(settings, "registration_mode", "closed")
+    assert 'data-testid="signup-tab"' not in client.get("/login").text
+
+    monkeypatch.setattr(settings, "registration_mode", "first-user")
+    monkeypatch.setattr(settings, "registration_bootstrap_token", SecretStr("b" * 32))
+    login = client.get("/login")
+    assert 'data-testid="signup-tab"' in login.text
+    assert "data-registration-bootstrap-token" in login.text
+    assert 'name="registration_bootstrap_token"' not in login.text
+    assert '<form class="auth-form" method="post" action="/login"' in login.text
+
+
+def test_request_origin_and_body_size_are_enforced(client, user):
+    blocked = client.post("/logout", headers={"Origin": "https://evil.example"})
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"] == "Untrusted request origin"
+    assert client.post("/logout", headers={"Origin": "null"}).status_code == 403
+    assert client.post("/logout", headers={"Origin": ""}).status_code == 403
+
+    same_origin = client.post(
+        "/logout",
+        headers={"Origin": "http://localhost"},
+        follow_redirects=False,
+    )
+    assert same_origin.status_code == 303
+    csrf_proved = client.post(
+        "/logout",
+        headers={"Origin": "null", "X-Repperoni-CSRF": "1"},
+        follow_redirects=False,
+    )
+    assert csrf_proved.status_code == 303
+    missing_origin_proved = client.post(
+        "/logout",
+        headers={"Origin": "", "X-Repperoni-CSRF": "1"},
+        follow_redirects=False,
+    )
+    assert missing_origin_proved.status_code == 303
+
+    native = client.post(
+        "/api/v1/workouts",
+        json={"name": "Native workout"},
+        headers={
+            "Authorization": f"Bearer {asyncio.run(bearer_token_for(user))}",
+            "Origin": "https://native.example",
+        },
+    )
+    assert native.status_code == 201
+
+    oversized = client.post(
+        "/api/v1/workouts",
+        content=b"x" * (settings.max_request_body_bytes + 1),
+        headers={"Content-Type": "application/json"},
+    )
+    assert oversized.status_code == 413
+    assert oversized.json()["detail"] == "Request body too large"
 
 
 def test_exercise_catalog_search_and_custom_exercises(client):
@@ -92,10 +194,20 @@ def test_complete_workout_and_previous_performance(client):
     assert first.json()["completed_at"].endswith("Z")
     retried = client.post(
         set_url,
-        json={"weight_kg": "80.50", "reps": 8, "client_mutation_id": mutation_id},
+        json={
+            "weight_kg": "80.50",
+            "reps": 8,
+            "rpe": "8.5",
+            "client_mutation_id": mutation_id,
+        },
     )
     assert retried.status_code == 200
     assert retried.json()["id"] == first.json()["id"]
+    conflicting_retry = client.post(
+        set_url,
+        json={"weight_kg": "81", "reps": 8, "client_mutation_id": mutation_id},
+    )
+    assert conflicting_retry.status_code == 409
 
     changed = client.patch(
         f"{set_url}/{first.json()['id']}", json={"weight_kg": "82.50", "reps": 7}
@@ -125,9 +237,15 @@ def test_set_delete_and_workout_listing(client):
     workout = add_station(client, start_workout(client), exercise)
     station = workout["stations"][0]
     url = f"/api/v1/workouts/{workout['id']}/stations/{station['id']}/sets"
-    entry = client.post(url, json={"weight_kg": 20, "reps": 10}).json()
-    assert client.delete(f"{url}/{entry['id']}").status_code == 204
-    assert client.delete(f"{url}/{entry['id']}").status_code == 404
+    first = client.post(url, json={"weight_kg": 20, "reps": 10}).json()
+    second = client.post(url, json={"weight_kg": 21, "reps": 9}).json()
+    assert client.delete(f"{url}/{first['id']}").status_code == 204
+    assert client.delete(f"{url}/{first['id']}").status_code == 404
+    after_gap = client.post(url, json={"weight_kg": 22, "reps": 8})
+    assert after_gap.status_code == 201
+    assert after_gap.json()["set_number"] == 3
+    assert client.delete(f"{url}/{second['id']}").status_code == 204
+    assert client.delete(f"{url}/{after_gap.json()['id']}").status_code == 204
     assert client.get(f"/api/v1/workouts/{workout['id']}").json()["total_sets"] == 0
     assert client.get("/api/v1/workouts", params={"limit": 1}).status_code == 200
 
@@ -154,24 +272,54 @@ def test_statistics_and_exercise_progress(client):
 
 
 def test_cross_user_resources_are_hidden(client, user):
-    exercise = first_exercise(client)
-    workout = start_workout(client)
+    custom = client.post(
+        "/api/v1/exercises",
+        json={"name": "Private Press", "muscle_group": "Core", "equipment": "Pizza"},
+    ).json()
+    workout = add_station(client, start_workout(client), custom)
+    station = workout["stations"][0]
+    set_url = f"/api/v1/workouts/{workout['id']}/stations/{station['id']}/sets"
+    entry = client.post(set_url, json={"weight_kg": 42, "reps": 6}).json()
+
     other = asyncio.run(create_user())
     app.dependency_overrides[get_current_user] = lambda: other
     assert client.get(f"/api/v1/workouts/{workout['id']}").status_code == 404
+    assert all(item["id"] != workout["id"] for item in client.get("/api/v1/workouts").json())
+    assert client.get("/api/v1/workouts/active").json() is None
+    assert all(item["id"] != custom["id"] for item in client.get("/api/v1/exercises").json())
+    assert client.get(f"/api/v1/exercises/{custom['id']}/last-performance").status_code == 404
+    assert client.get(f"/api/v1/stats/exercises/{custom['id']}/progress").status_code == 404
+    overview = client.get("/api/v1/stats/overview").json()
+    assert overview["workout_count"] == 0
+    assert overview["total_sets"] == 0
     assert (
         client.post(
             f"/api/v1/workouts/{workout['id']}/stations",
-            json={"exercise_id": exercise["id"]},
+            json={"exercise_id": custom["id"]},
         ).status_code
         == 404
     )
+    assert (
+        client.patch(
+            f"{set_url}/{entry['id']}",
+            json={"weight_kg": 1},
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"{set_url}/{entry['id']}").status_code == 404
+
     app.dependency_overrides[get_current_user] = lambda: user
+    assert client.get(f"/api/v1/workouts/{workout['id']}").json()["total_sets"] == 1
 
 
 def test_validation_and_missing_resources(client):
     assert client.get("/api/v1/workouts/active").json() is None
     assert client.post("/api/v1/workouts", json={"name": ""}).status_code == 422
+    assert client.post("/api/v1/workouts", json={"name": "   "}).status_code == 422
+    for field in ("name", "muscle_group", "equipment"):
+        exercise = {"name": "Press", "muscle_group": "Chest", "equipment": "Barbell"}
+        exercise[field] = " \n "
+        assert client.post("/api/v1/exercises", json=exercise).status_code == 422
     assert client.get(f"/api/v1/workouts/{uuid.uuid4()}").status_code == 404
     assert client.get(f"/api/v1/exercises/{uuid.uuid4()}/last-performance").status_code == 404
     workout = start_workout(client)

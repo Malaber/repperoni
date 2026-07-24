@@ -2,7 +2,18 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -10,6 +21,15 @@ from app.core.database import Base
 
 class Workout(Base):
     __tablename__ = "workouts"
+    __table_args__ = (
+        Index(
+            "uq_workouts_user_active",
+            "user_id",
+            unique=True,
+            sqlite_where=text("completed_at IS NULL"),
+            postgresql_where=text("completed_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -32,6 +52,7 @@ class WorkoutStation(Base):
     __tablename__ = "workout_stations"
     __table_args__ = (
         UniqueConstraint("workout_id", "exercise_id", name="uq_station_workout_exercise"),
+        UniqueConstraint("workout_id", "position", name="uq_station_workout_position"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

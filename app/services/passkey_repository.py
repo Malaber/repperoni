@@ -1,17 +1,63 @@
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from secrets import compare_digest
+from unicodedata import normalize
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 from fastpasskey import PasskeyConflictError, PasskeyCredential
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import RegistrationMode, settings
 from app.core.database import get_db
-from app.core.security import create_access_token
-from app.models import Passkey, User
-from app.services.auth_sessions import create_auth_session, revoke_auth_session
+from app.core.security import create_access_token, decode_access_token
+from app.models import Passkey, PasskeyCeremonyClaim, User
+from app.services.auth_sessions import (
+    create_auth_session,
+    revoke_auth_session,
+    revoke_auth_session_id,
+)
+
+
+REGISTRATION_ROUTE_SUFFIXES = frozenset(
+    {
+        "/auth/register/options",
+        "/auth/register/verify",
+    }
+)
+REGISTRATION_BOOTSTRAP_HEADER = "X-Repperoni-Registration-Token"
+VERIFY_ROUTE_SESSION_KEYS = {
+    "/auth/register/verify": "passkey_register",
+    "/auth/login/verify": "passkey_login",
+    "/auth/passkeys/{passkey_id}/rename/verify": "passkey_rename",
+    "/auth/passkeys/{passkey_id}/delete/verify": "passkey_delete",
+}
+
+
+class RegistrationUnavailableError(Exception):
+    """The configured self-registration policy rejected a new account."""
+
+
+def normalize_registration_email(raw_email: str) -> str:
+    email = normalize("NFKC", raw_email).strip().casefold()
+    if not email:
+        raise ValueError("Email is required")
+    if len(email) > 255:
+        raise ValueError("Email must be at most 255 characters")
+    return email
+
+
+def normalize_registration_display_name(raw_name: str) -> str:
+    display_name = " ".join(normalize("NFKC", raw_name).split())
+    if not display_name:
+        raise ValueError("Display name is required")
+    if len(display_name) > 120:
+        raise ValueError("Display name must be at most 120 characters")
+    return display_name
 
 
 def _new_passkey(user_id: UUID | None, name: str, credential: PasskeyCredential) -> Passkey:
@@ -30,10 +76,51 @@ def _new_passkey(user_id: UUID | None, name: str, credential: PasskeyCredential)
 
 
 class RepperoniPasskeyRepository:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        registration_mode: RegistrationMode | None = None,
+    ) -> None:
         self.db = db
+        self.registration_mode = registration_mode or settings.registration_mode
+        self.auth_session_id: UUID | None = None
+
+    async def claim_passkey_ceremony(self, state: Mapping[str, object]) -> None:
+        """Atomically make a signed browser ceremony state single use."""
+        challenge = state.get("challenge")
+        if not isinstance(challenge, str) or not challenge:
+            return
+        now = datetime.now(UTC)
+        await self.db.execute(
+            delete(PasskeyCeremonyClaim).where(PasskeyCeremonyClaim.expires_at <= now)
+        )
+        self.db.add(
+            PasskeyCeremonyClaim(
+                challenge_digest=sha256(challenge.encode()).digest(),
+                expires_at=now + timedelta(seconds=settings.auth_flow_expire_seconds),
+            )
+        )
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Passkey ceremony was already used",
+            ) from exc
+
+    async def ensure_registration_allowed(self) -> None:
+        if self.registration_mode == "open":
+            return
+        if self.registration_mode == "closed":
+            raise RegistrationUnavailableError
+        existing_user = await self.db.scalar(select(User.id).limit(1))
+        if existing_user is not None:
+            raise RegistrationUnavailableError
 
     async def user_by_email(self, email: str) -> User | None:
+        email = normalize_registration_email(email)
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.passkeys))
@@ -54,8 +141,9 @@ class RepperoniPasskeyRepository:
     async def passkey_by_credential_id(self, credential_id: str) -> Passkey | None:
         result = await self.db.execute(
             select(Passkey)
+            .join(Passkey.user)
             .options(selectinload(Passkey.user))
-            .where(Passkey.credential_id == credential_id)
+            .where(Passkey.credential_id == credential_id, User.is_active.is_(True))
         )
         return result.scalar_one_or_none()
 
@@ -68,7 +156,20 @@ class RepperoniPasskeyRepository:
         passkey_name: str,
         credential: PasskeyCredential,
     ) -> User:
-        user = User(id=user_id, email=email, display_name=display_name)
+        try:
+            await self.ensure_registration_allowed()
+        except RegistrationUnavailableError as exc:
+            raise PasskeyConflictError from exc
+        normalized_email = normalize_registration_email(email)
+        normalized_display_name = normalize_registration_display_name(display_name)
+        first_user = self.registration_mode == "first-user"
+        user = User(
+            id=user_id,
+            email=normalized_email,
+            display_name=normalized_display_name,
+            is_admin=first_user,
+            registration_slot=1 if first_user else None,
+        )
         user.passkeys.append(_new_passkey(None, passkey_name, credential))
         self.db.add(user)
         try:
@@ -98,15 +199,52 @@ class RepperoniPasskeyRepository:
         await self.db.refresh(record)
         return record
 
+    async def _stage_verified_passkey_use(
+        self,
+        passkey: Passkey,
+        *,
+        new_sign_count: int,
+        name: str | None = None,
+    ) -> None:
+        if new_sign_count < 0 or (passkey.sign_count > 0 and new_sign_count <= passkey.sign_count):
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Passkey counter did not advance",
+            )
+        values: dict[str, object] = {
+            "sign_count": new_sign_count,
+            "last_used_at": datetime.now(UTC),
+        }
+        if name is not None:
+            values["name"] = name
+        result = await self.db.execute(
+            update(Passkey)
+            .where(
+                Passkey.id == passkey.id,
+                Passkey.sign_count == passkey.sign_count,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Passkey changed during verification; try again",
+            )
+
     async def record_passkey_use(self, passkey: Passkey, *, new_sign_count: int) -> None:
-        passkey.sign_count = new_sign_count
-        passkey.last_used_at = datetime.now(UTC)
+        await self._stage_verified_passkey_use(passkey, new_sign_count=new_sign_count)
         await self.db.commit()
+        await self.db.refresh(passkey)
 
     async def rename_passkey(self, passkey: Passkey, *, name: str, new_sign_count: int) -> Passkey:
-        passkey.name = name
-        passkey.sign_count = new_sign_count
-        passkey.last_used_at = datetime.now(UTC)
+        await self._stage_verified_passkey_use(
+            passkey,
+            name=name,
+            new_sign_count=new_sign_count,
+        )
         await self.db.commit()
         await self.db.refresh(passkey)
         return passkey
@@ -114,24 +252,84 @@ class RepperoniPasskeyRepository:
     async def delete_passkey(
         self, *, user_id: UUID, passkey_id: UUID, confirming_passkey: Passkey, new_sign_count: int
     ) -> None:
-        confirming_passkey.sign_count = new_sign_count
-        confirming_passkey.last_used_at = datetime.now(UTC)
-        await self.db.flush()
+        await self._stage_verified_passkey_use(
+            confirming_passkey,
+            new_sign_count=new_sign_count,
+        )
         await self.db.execute(
             delete(Passkey).where(Passkey.id == passkey_id, Passkey.user_id == user_id)
         )
         await self.db.commit()
 
     async def authenticate(self, request: Request, user: User) -> User:
-        await create_auth_session(request, self.db, user)
+        self.auth_session_id = await create_auth_session(request, self.db, user)
         return user
 
     async def logout(self, request: Request) -> None:
         await revoke_auth_session(request, self.db)
+        authorization = request.headers.get("Authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.casefold() == "bearer" and token:
+            claims = decode_access_token(token)
+            if claims is not None:
+                await revoke_auth_session_id(self.db, claims.session_id)
 
     def access_token(self, user: User) -> str:
-        return create_access_token(user.id)
+        if self.auth_session_id is None:
+            raise RuntimeError("Access token requested before authentication")
+        return create_access_token(user.id, self.auth_session_id)
 
 
-def get_passkey_repository(db: AsyncSession = Depends(get_db)) -> RepperoniPasskeyRepository:
-    return RepperoniPasskeyRepository(db)
+async def get_passkey_repository(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RepperoniPasskeyRepository:
+    repository = RepperoniPasskeyRepository(db)
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", request.url.path)
+    if any(route_path.endswith(suffix) for suffix in REGISTRATION_ROUTE_SUFFIXES):
+        configured_token = settings.registration_bootstrap_token
+        if settings.registration_mode == "first-user" and configured_token is not None:
+            supplied_token = request.headers.get(REGISTRATION_BOOTSTRAP_HEADER, "")
+            if not compare_digest(
+                supplied_token.encode(),
+                configured_token.get_secret_value().encode(),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Registration is not available",
+                )
+        try:
+            await repository.ensure_registration_allowed()
+        except RegistrationUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Registration is not available",
+            ) from exc
+
+        if route_path.endswith("/auth/register/options"):
+            try:
+                payload = await request.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                try:
+                    if isinstance(payload.get("email"), str):
+                        payload["email"] = normalize_registration_email(payload["email"])
+                    if isinstance(payload.get("display_name"), str):
+                        payload["display_name"] = normalize_registration_display_name(
+                            payload["display_name"]
+                        )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=str(exc),
+                    ) from exc
+    session_key = next(
+        (key for suffix, key in VERIFY_ROUTE_SESSION_KEYS.items() if route_path.endswith(suffix)),
+        None,
+    )
+    state = request.session.get(session_key) if session_key else None
+    if isinstance(state, Mapping):
+        await repository.claim_passkey_ceremony(state)
+    return repository

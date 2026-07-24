@@ -17,6 +17,24 @@ const devices = requestedDevice === "all" ? ["desktop", "mobile"] : [requestedDe
 const resultsDirectory = path.resolve("test-results");
 
 
+async function withTimeout(operation, label, milliseconds = 15000) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${milliseconds}ms`)),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+
 function fastPasskeyHelper() {
   const python = process.env.REPPERONI_PYTHON || path.resolve(".venv/bin/python");
   return execFileSync(
@@ -164,10 +182,16 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.screenshot({path: path.join(resultsDirectory, `${device}-progress.png`), fullPage: true});
   } catch (error) {
     await page.screenshot({path: path.join(resultsDirectory, `${device}-failure.png`), fullPage: true}).catch(() => {});
+    if (errors.length && error instanceof Error) {
+      error.message += `\nBrowser errors before failure: ${errors.join(" | ")}`;
+    }
     throw error;
   } finally {
-    await authenticator.dispose();
-    await context.close();
+    try {
+      await withTimeout(authenticator.dispose(), `${device} authenticator cleanup`);
+    } finally {
+      await withTimeout(context.close(), `${device} browser-context cleanup`);
+    }
   }
 
   if (errors.length) throw new Error(`Browser errors: ${errors.join(" | ")}`);
@@ -188,7 +212,7 @@ async function main() {
       completed.push(device);
     }
   } finally {
-    await browser.close();
+    await withTimeout(browser.close(), "browser cleanup");
   }
   const summary = `# Repperoni browser E2E\n\n- Base URL: ${baseUrl}\n- Devices: ${completed.join(", ")}\n- Result: passed\n`;
   await writeFile(path.join(resultsDirectory, "summary.md"), summary);
@@ -200,5 +224,5 @@ main().catch(async (error) => {
   await mkdir(resultsDirectory, {recursive: true});
   await writeFile(path.join(resultsDirectory, "summary.md"), `# Repperoni browser E2E\n\nResult: failed\n\n${error.stack || error}\n`);
   console.error(error);
-  process.exitCode = 1;
+  process.exit(1);
 });

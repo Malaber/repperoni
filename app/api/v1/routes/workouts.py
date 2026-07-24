@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -54,6 +55,26 @@ def _exercise_out(exercise: Exercise) -> ExerciseOut:
 
 def _set_out(entry: SetEntry) -> SetOut:
     return SetOut.model_validate(entry)
+
+
+def _idempotent_set_out(
+    entry: SetEntry,
+    station_id: UUID,
+    payload: SetCreate,
+    response: Response,
+) -> SetOut:
+    if (
+        entry.station_id != station_id
+        or entry.weight_kg != payload.weight_kg
+        or entry.reps != payload.reps
+        or entry.rpe != payload.rpe
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Client mutation ID was already used for another set",
+        )
+    response.status_code = status.HTTP_200_OK
+    return _set_out(entry)
 
 
 async def _exercise_for_user(db: AsyncSession, exercise_id: UUID, user_id: UUID) -> Exercise:
@@ -181,7 +202,14 @@ async def create_exercise(
         equipment=payload.equipment.strip(),
     )
     db.add(exercise)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="You already have an exercise with that name",
+        ) from exc
     await db.refresh(exercise)
     return _exercise_out(exercise)
 
@@ -257,7 +285,11 @@ async def create_workout(
         started_at=datetime.now(UTC),
     )
     db.add(workout)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Finish your active workout first") from exc
     return await _workout_out(db, await _workout_for_user(db, workout.id, user.id))
 
 
@@ -291,15 +323,37 @@ async def add_station(
     await _exercise_for_user(db, payload.exercise_id, user.id)
     if any(station.exercise_id == payload.exercise_id for station in workout.stations):
         raise HTTPException(status_code=409, detail="That station is already in this workout")
-    db.add(
-        WorkoutStation(
+    for _ in range(3):
+        position = await db.scalar(
+            select(func.coalesce(func.max(WorkoutStation.position), 0) + 1).where(
+                WorkoutStation.workout_id == workout.id
+            )
+        )
+        station = WorkoutStation(
             workout_id=workout.id,
             exercise_id=payload.exercise_id,
-            position=len(workout.stations) + 1,
+            position=position,
             started_at=datetime.now(UTC),
         )
-    )
-    await db.commit()
+        db.add(station)
+        try:
+            await db.commit()
+            break
+        except IntegrityError:
+            await db.rollback()
+            existing = await db.scalar(
+                select(WorkoutStation.id).where(
+                    WorkoutStation.workout_id == workout.id,
+                    WorkoutStation.exercise_id == payload.exercise_id,
+                )
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="That station is already in this workout",
+                )
+    else:
+        raise HTTPException(status_code=409, detail="A station was added concurrently; retry")
     return await _workout_out(db, await _workout_for_user(db, workout.id, user.id))
 
 
@@ -332,22 +386,41 @@ async def add_set(
             )
         )
         if entry := existing.scalar_one_or_none():
-            response.status_code = status.HTTP_200_OK
-            return _set_out(entry)
-    entry = SetEntry(
-        user_id=user.id,
-        station_id=station.id,
-        set_number=len(station.sets) + 1,
-        weight_kg=payload.weight_kg,
-        reps=payload.reps,
-        rpe=payload.rpe,
-        completed_at=datetime.now(UTC),
-        client_mutation_id=payload.client_mutation_id,
-    )
-    db.add(entry)
-    await db.commit()
-    await db.refresh(entry)
-    return _set_out(entry)
+            return _idempotent_set_out(entry, station.id, payload, response)
+    for _ in range(3):
+        set_number = await db.scalar(
+            select(func.coalesce(func.max(SetEntry.set_number), 0) + 1).where(
+                SetEntry.station_id == station.id
+            )
+        )
+        entry = SetEntry(
+            user_id=user.id,
+            station_id=station.id,
+            set_number=set_number,
+            weight_kg=payload.weight_kg,
+            reps=payload.reps,
+            rpe=payload.rpe,
+            completed_at=datetime.now(UTC),
+            client_mutation_id=payload.client_mutation_id,
+        )
+        db.add(entry)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            if payload.client_mutation_id:
+                existing = await db.scalar(
+                    select(SetEntry).where(
+                        SetEntry.user_id == user.id,
+                        SetEntry.client_mutation_id == payload.client_mutation_id,
+                    )
+                )
+                if existing is not None:
+                    return _idempotent_set_out(existing, station.id, payload, response)
+            continue
+        await db.refresh(entry)
+        return _set_out(entry)
+    raise HTTPException(status_code=409, detail="A set was added concurrently; retry")
 
 
 async def _set_for_user(

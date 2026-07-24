@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import time
+from importlib.util import find_spec
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -17,6 +18,7 @@ TMP = ROOT / ".tmp"
 PID_FILE = TMP / "repperoni.pid"
 LOG_FILE = TMP / "repperoni.log"
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+DIRECT_URL_REQUIREMENT_PATTERN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)\s+@\s+\S+")
 MACOS_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 
@@ -123,6 +125,19 @@ def _stop_process() -> None:
     PID_FILE.unlink(missing_ok=True)
 
 
+def _uvicorn_command(port: int) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+
+
 def _wait_for_url(url: str, timeout: float = 30) -> None:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
@@ -137,6 +152,38 @@ def _wait_for_url(url: str, timeout: float = 30) -> None:
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
 
 
+def _write_public_audit_lock(source: Path, target: Path) -> list[str]:
+    """Project the hash lock to packages supported by public advisory services."""
+    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+    public_lines: list[str] = []
+    omitted: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = DIRECT_URL_REQUIREMENT_PATTERN.match(line)
+        if match is None:
+            public_lines.append(line)
+            index += 1
+            continue
+        omitted.append(match.group("name"))
+        while line.rstrip().endswith("\\"):
+            index += 1
+            if index >= len(lines):
+                raise RuntimeError(f"Unterminated requirement in {source}")
+            line = lines[index]
+        index += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(public_lines), encoding="utf-8")
+    return omitted
+
+
+def _installed_package_path(name: str) -> Path:
+    spec = find_spec(name)
+    if spec is None or not spec.submodule_search_locations:
+        raise RuntimeError(f"Installed package source not found: {name}")
+    return Path(next(iter(spec.submodule_search_locations)))
+
+
 @task
 def setup_venv(c):
     """Create the Python 3.14 virtual environment."""
@@ -146,7 +193,15 @@ def setup_venv(c):
 
 @task
 def install_python(c):
-    c.run(f"{_bin('pip')} install -e '.[dev]'", env=_clean_install_env())
+    environment = _clean_install_env()
+    c.run(
+        f"{_bin('pip')} install --require-hashes -r requirements-dev.lock",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip')} install --no-deps --no-build-isolation -e .",
+        env=environment,
+    )
 
 
 @task
@@ -162,7 +217,52 @@ def install_deps(_):
 
 @task
 def bootstrap_ci(c):
-    c.run(f"{shlex.quote(sys.executable)} -m pip install -e '.[dev]'", env=_clean_install_env())
+    python = shlex.quote(sys.executable)
+    environment = _clean_install_env()
+    c.run(
+        f"{python} -m pip install --require-hashes -r requirements-dev.lock",
+        env=environment,
+    )
+    c.run(
+        f"{python} -m pip install --no-deps --no-build-isolation -e .",
+        env=environment,
+    )
+
+
+@task
+def lock_deps(c):
+    """Regenerate hash-locked bootstrap, production, and development dependencies."""
+    environment = {
+        **_clean_install_env(),
+        "CUSTOM_COMPILE_COMMAND": ".venv/bin/inv lock-deps",
+    }
+    common = "--quiet --generate-hashes --allow-unsafe --strip-extras --newline=lf"
+    c.run(
+        f"{_bin('pip-compile')} {common} --output-file=requirements-bootstrap.lock "
+        "requirements-bootstrap.in",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip-compile')} {common} --build-deps-for=wheel "
+        "--output-file=requirements.lock pyproject.toml",
+        env=environment,
+    )
+    c.run(
+        f"{_bin('pip-compile')} {common} --build-deps-for=wheel --extra=dev "
+        "--output-file=requirements-dev.lock pyproject.toml",
+        env=environment,
+    )
+
+
+@task
+def check_locks(c):
+    """Regenerate locks and reject version/hash drift across platforms."""
+    lock_deps.body(c)
+    c.run(
+        "git diff --exit-code "
+        "--ignore-matching-lines='^[[:space:]]*#' -- "
+        "requirements-bootstrap.lock requirements.lock requirements-dev.lock"
+    )
 
 
 @task
@@ -194,7 +294,39 @@ def check_python(c):
 
 @task
 def check_js(c):
-    c.run("npm run test:js")
+    c.run("npm run check:js")
+
+
+@task
+def audit_python(c):
+    audit_lock = TMP / "requirements-audit.lock"
+    omitted = _write_public_audit_lock(ROOT / "requirements.lock", audit_lock)
+    if omitted != ["fastpasskey"]:
+        raise RuntimeError(f"Unexpected direct-URL audit exclusions: {omitted}")
+    print(
+        "Auditing public dependencies; direct artifact verified by lock hash: fastpasskey",
+        flush=True,
+    )
+    c.run(
+        f"{_bin('pip-audit')} --requirement {shlex.quote(str(audit_lock))} "
+        "--disable-pip --require-hashes --strict --progress-spinner=off"
+        " --cache-dir .tmp/pip-audit-cache"
+    )
+
+
+@task
+def bandit_check(c):
+    paths = (ROOT / "app", _installed_package_path("fastpasskey"))
+    quoted_paths = " ".join(shlex.quote(str(path)) for path in paths)
+    c.run(f"{_bin('bandit')} --quiet --recursive {quoted_paths}")
+
+
+@task
+def security_check(c):
+    """Audit locked Python/Node dependencies and scan Python security patterns."""
+    audit_python.body(c)
+    bandit_check.body(c)
+    c.run("npm audit --audit-level=high")
 
 
 @task
@@ -224,22 +356,16 @@ def start_app(c, port=8000, e2e=False):
     environment = os.environ.copy()
     environment.setdefault("APP_BASE_URL", f"http://localhost:{port}")
     environment.setdefault("WEBAUTHN_RP_ID", "localhost")
-    environment.setdefault("SECRET_KEY", "repperoni-local-e2e-secret")
+    environment.setdefault("SECRET_KEY", "repperoni-local-e2e-secret-not-for-production")
     if e2e:
         database = TMP / "e2e.db"
         for suffix in ("", "-wal", "-shm"):
             Path(f"{database}{suffix}").unlink(missing_ok=True)
         environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database}"
+        environment["REGISTRATION_MODE"] = "open"
     log = LOG_FILE.open("w", encoding="utf-8")
     process = subprocess.Popen(
-        [
-            str(ROOT / ".venv" / "bin" / "uvicorn"),
-            "app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
+        _uvicorn_command(port),
         cwd=ROOT,
         env=environment,
         stdout=log,

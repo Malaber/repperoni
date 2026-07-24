@@ -1,4 +1,15 @@
-from tasks import _latest_stable_version, _version_values
+import sys
+from pathlib import Path
+
+from tasks import (
+    _latest_stable_version,
+    _uvicorn_command,
+    _version_values,
+    _write_public_audit_lock,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versioning_ignores_non_release_tags():
@@ -14,3 +25,50 @@ def test_branch_versions_avoid_existing_rc_tags():
         "release_version": "0.1.1-rc.6",
         "git_tag": "v0.1.1-rc.6",
     }
+
+
+def test_uvicorn_command_uses_invoking_python():
+    command = _uvicorn_command(8123)
+    assert command == [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8123",
+    ]
+
+
+def test_environment_bootstrap_is_hash_locked():
+    setup = (ROOT / "scripts/setup_env.sh").read_text(encoding="utf-8")
+    tasks = (ROOT / "tasks.py").read_text(encoding="utf-8")
+    assert "pip install invoke" not in setup
+    assert "--require-hashes -r requirements-bootstrap.lock" in setup
+    assert "--require-hashes -r requirements-dev.lock" in tasks
+    assert "--no-deps --no-build-isolation -e ." in tasks
+    assert "--ignore-matching-lines='^[[:space:]]*#'" in tasks
+    assert 'c.run("npm run check:js")' in tasks
+
+
+def test_public_audit_lock_excludes_complete_direct_url_entries(tmp_path):
+    source = tmp_path / "requirements.lock"
+    target = tmp_path / "audit.lock"
+    source.write_text(
+        "public==1.2.3 \\\n"
+        "    --hash=sha256:public\n"
+        "private @ https://example.invalid/private-2.0.whl#sha256=private \\\n"
+        "    --hash=sha256:private\n"
+        "other==3.0 \\\n"
+        "    --hash=sha256:other\n",
+        encoding="utf-8",
+    )
+
+    assert _write_public_audit_lock(source, target) == ["private"]
+    assert target.read_text(encoding="utf-8") == (
+        "public==1.2.3 \\\n"
+        "    --hash=sha256:public\n"
+        "other==3.0 \\\n"
+        "    --hash=sha256:other\n"
+    )

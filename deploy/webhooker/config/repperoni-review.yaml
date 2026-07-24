@@ -12,14 +12,14 @@ deployment:
   compose_file: /srv/repperoni/deploy/compose.review.yml
   compose_bin: docker
   working_directory: /srv/repperoni/deploy
-  hostname_template: pr-{pr}.pr.repperoni.malaber.de
+  hostname_template: pr-{pr}.repperoni-review.malaber.de
   project_name_prefix: repperoni-pr-
-  preview_base_domain: pr.repperoni.malaber.de
+  preview_base_domain: repperoni-review.malaber.de
 
 image:
   registry: ghcr.io
   repository: malaber/repperoni
-  tag_template: pr-{pr}-{sha7}
+  tag_template: review-sha-{sha}
 
 preview:
   base_dir: /srv/repperoni/data/reviews
