@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -169,6 +169,26 @@ def _require_active(workout: Workout) -> None:
         raise HTTPException(status_code=409, detail="Workout is already finished")
 
 
+async def _claim_active_workout(
+    db: AsyncSession,
+    workout_id: UUID,
+    user_id: UUID,
+) -> None:
+    claimed = await db.execute(
+        update(Workout)
+        .where(
+            Workout.id == workout_id,
+            Workout.user_id == user_id,
+            Workout.completed_at.is_(None),
+        )
+        .values(started_at=Workout.started_at)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Workout is already finished")
+
+
 @router.get("/exercises", response_model=list[ExerciseOut])
 async def list_exercises(
     search: str = Query(default="", max_length=120),
@@ -306,9 +326,23 @@ async def finish_workout(
 ):
     workout = await _workout_for_user(db, workout_id, user.id)
     _require_active(workout)
-    workout.completed_at = datetime.now(UTC)
+    user_id = user.id
+    workout_id = workout.id
+    finished = await db.execute(
+        update(Workout)
+        .where(
+            Workout.id == workout_id,
+            Workout.user_id == user_id,
+            Workout.completed_at.is_(None),
+        )
+        .values(completed_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    if finished.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Workout is already finished")
     await db.commit()
-    return await _workout_out(db, await _workout_for_user(db, workout.id, user.id))
+    return await _workout_out(db, await _workout_for_user(db, workout_id, user_id))
 
 
 @router.post("/workouts/{workout_id}/stations", response_model=WorkoutOut, status_code=201)
@@ -323,15 +357,19 @@ async def add_station(
     await _exercise_for_user(db, payload.exercise_id, user.id)
     if any(station.exercise_id == payload.exercise_id for station in workout.stations):
         raise HTTPException(status_code=409, detail="That station is already in this workout")
+    user_id = user.id
+    workout_id = workout.id
+    exercise_id = payload.exercise_id
     for _ in range(3):
+        await _claim_active_workout(db, workout_id, user_id)
         position = await db.scalar(
             select(func.coalesce(func.max(WorkoutStation.position), 0) + 1).where(
-                WorkoutStation.workout_id == workout.id
+                WorkoutStation.workout_id == workout_id
             )
         )
         station = WorkoutStation(
-            workout_id=workout.id,
-            exercise_id=payload.exercise_id,
+            workout_id=workout_id,
+            exercise_id=exercise_id,
             position=position,
             started_at=datetime.now(UTC),
         )
@@ -343,8 +381,8 @@ async def add_station(
             await db.rollback()
             existing = await db.scalar(
                 select(WorkoutStation.id).where(
-                    WorkoutStation.workout_id == workout.id,
-                    WorkoutStation.exercise_id == payload.exercise_id,
+                    WorkoutStation.workout_id == workout_id,
+                    WorkoutStation.exercise_id == exercise_id,
                 )
             )
             if existing is not None:
@@ -354,7 +392,7 @@ async def add_station(
                 )
     else:
         raise HTTPException(status_code=409, detail="A station was added concurrently; retry")
-    return await _workout_out(db, await _workout_for_user(db, workout.id, user.id))
+    return await _workout_out(db, await _workout_for_user(db, workout_id, user_id))
 
 
 async def _station(workout: Workout, station_id: UUID) -> WorkoutStation:
@@ -378,24 +416,28 @@ async def add_set(
     workout = await _workout_for_user(db, workout_id, user.id)
     _require_active(workout)
     station = await _station(workout, station_id)
+    user_id = user.id
+    workout_id = workout.id
+    station_id = station.id
     if payload.client_mutation_id:
         existing = await db.execute(
             select(SetEntry).where(
-                SetEntry.user_id == user.id,
+                SetEntry.user_id == user_id,
                 SetEntry.client_mutation_id == payload.client_mutation_id,
             )
         )
         if entry := existing.scalar_one_or_none():
-            return _idempotent_set_out(entry, station.id, payload, response)
+            return _idempotent_set_out(entry, station_id, payload, response)
     for _ in range(3):
+        await _claim_active_workout(db, workout_id, user_id)
         set_number = await db.scalar(
             select(func.coalesce(func.max(SetEntry.set_number), 0) + 1).where(
-                SetEntry.station_id == station.id
+                SetEntry.station_id == station_id
             )
         )
         entry = SetEntry(
-            user_id=user.id,
-            station_id=station.id,
+            user_id=user_id,
+            station_id=station_id,
             set_number=set_number,
             weight_kg=payload.weight_kg,
             reps=payload.reps,
@@ -411,12 +453,12 @@ async def add_set(
             if payload.client_mutation_id:
                 existing = await db.scalar(
                     select(SetEntry).where(
-                        SetEntry.user_id == user.id,
+                        SetEntry.user_id == user_id,
                         SetEntry.client_mutation_id == payload.client_mutation_id,
                     )
                 )
                 if existing is not None:
-                    return _idempotent_set_out(existing, station.id, payload, response)
+                    return _idempotent_set_out(existing, station_id, payload, response)
             continue
         await db.refresh(entry)
         return _set_out(entry)
@@ -450,6 +492,7 @@ async def update_set(
     _require_active(workout)
     await _station(workout, station_id)
     entry = await _set_for_user(db, set_id, station_id, user.id)
+    await _claim_active_workout(db, workout.id, user.id)
     changes = payload.model_dump(exclude_unset=True)
     for name, value in changes.items():
         setattr(entry, name, value)
@@ -470,6 +513,7 @@ async def delete_set(
     _require_active(workout)
     await _station(workout, station_id)
     entry = await _set_for_user(db, set_id, station_id, user.id)
+    await _claim_active_workout(db, workout.id, user.id)
     await db.delete(entry)
     await db.commit()
 

@@ -1,15 +1,20 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
+from fastapi import HTTPException
 from pydantic import SecretStr
 
 from app.api.deps import get_current_user, get_optional_current_user
+from app.api.v1.routes.workouts import add_station as add_station_route
+from app.api.v1.routes.workouts import finish_workout as finish_workout_route
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import create_access_token
 from app.main import app
 from app.models import AuthSession
+from app.schemas.workouts import StationCreate
 from tests.conftest import create_user
 
 
@@ -215,6 +220,25 @@ def test_complete_workout_and_previous_performance(client):
     assert changed.status_code == 200
     assert changed.json()["weight_kg"] == "82.50"
     assert client.patch(f"{set_url}/{first.json()['id']}", json={}).status_code == 422
+    assert (
+        client.patch(
+            f"{set_url}/{first.json()['id']}",
+            json={"weight_kg": None, "rpe": 8},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            f"{set_url}/{first.json()['id']}",
+            json={"reps": None, "rpe": 8},
+        ).status_code
+        == 422
+    )
+    cleared_rpe = client.patch(f"{set_url}/{first.json()['id']}", json={"rpe": None})
+    assert cleared_rpe.status_code == 200
+    assert cleared_rpe.json()["rpe"] is None
+    assert client.post(set_url, json={"weight_kg": 10, "reps": True}).status_code == 422
+    assert client.patch(f"{set_url}/{first.json()['id']}", json={"reps": True}).status_code == 422
 
     last = client.get(f"/api/v1/exercises/{exercise['id']}/last-performance")
     assert last.json()["weight_kg"] == "82.50"
@@ -225,6 +249,16 @@ def test_complete_workout_and_previous_performance(client):
     assert finished.json()["total_volume_kg"] == "577.50"
     assert finished.json()["completed_at"].endswith("Z")
     assert client.post(f"/api/v1/workouts/{workout['id']}/finish").status_code == 409
+    assert client.post(set_url, json={"weight_kg": 10, "reps": 1}).status_code == 409
+    assert client.patch(f"{set_url}/{first.json()['id']}", json={"reps": 1}).status_code == 409
+    assert client.delete(f"{set_url}/{first.json()['id']}").status_code == 409
+    assert (
+        client.post(
+            f"/api/v1/workouts/{workout['id']}/stations",
+            json={"exercise_id": exercise["id"]},
+        ).status_code
+        == 409
+    )
 
     next_workout = add_station(client, start_workout(client, "Round two"), exercise)
     previous = next_workout["stations"][0]["previous_performance"]
@@ -332,3 +366,39 @@ def test_validation_and_missing_resources(client):
     )
     empty_stats = client.get("/api/v1/stats/overview")
     assert empty_stats.json()["current_streak"] == 0
+
+
+def test_concurrent_workout_finish_is_atomic(client, user):
+    workout = start_workout(client)
+
+    async def scenario():
+        async def finish():
+            async with SessionLocal() as db:
+                try:
+                    await finish_workout_route(UUID(workout["id"]), db, user)
+                except HTTPException as exc:
+                    return exc.status_code
+                return 200
+
+        return await asyncio.gather(finish(), finish())
+
+    assert sorted(asyncio.run(scenario())) == [200, 409]
+
+
+def test_concurrent_duplicate_station_returns_conflict_not_server_error(client, user):
+    exercise = first_exercise(client)
+    workout = start_workout(client)
+    payload = StationCreate(exercise_id=UUID(exercise["id"]))
+
+    async def scenario():
+        async def create():
+            async with SessionLocal() as db:
+                try:
+                    await add_station_route(UUID(workout["id"]), payload, db, user)
+                except HTTPException as exc:
+                    return exc.status_code
+                return 201
+
+        return await asyncio.gather(create(), create())
+
+    assert sorted(asyncio.run(scenario())) == [201, 409]
