@@ -176,3 +176,61 @@ def test_passkey_ceremony_claim_migration_enforces_single_use(tmp_path, monkeypa
                 """,
                 (digest, "2026-01-01 10:00:00"),
             )
+
+
+def test_exercise_name_key_migration_repairs_case_variants(tmp_path, monkeypatch):
+    database = tmp_path / "exercise-name-keys.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{database}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0004_passkey_ceremony_claims")
+
+    user_id = uuid.uuid4().hex
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            (user_id, "names@example.com", "Names"),
+        )
+        connection.executemany(
+            """
+            INSERT INTO exercises
+                (id, user_id, name, muscle_group, equipment)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (uuid.uuid4().hex, user_id, "Pepper Press", "Core", "Pizza"),
+                (uuid.uuid4().hex, user_id, "pepper press", "Core", "Pizza"),
+            ],
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute(
+            """
+            SELECT name, name_key
+            FROM exercises
+            WHERE user_id = ?
+            ORDER BY name
+            """,
+            (user_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        assert len({name for name, _ in rows}) == 2
+        assert len({name_key for _, name_key in rows}) == 2
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO exercises
+                    (id, user_id, name, name_key, muscle_group, equipment)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    "PEPPER PRESS",
+                    "pepper press",
+                    "Core",
+                    "Pizza",
+                ),
+            )

@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models import Exercise, SetEntry, User, Workout, WorkoutStation
+from app.models.exercise import exercise_name_key
 from app.schemas.workouts import (
     ExerciseCreate,
     ExerciseOut,
@@ -208,16 +209,20 @@ async def create_exercise(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    name = payload.name.strip()
+    name_key = exercise_name_key(name)
     existing = await db.execute(
         select(Exercise).where(
-            Exercise.user_id == user.id, func.lower(Exercise.name) == payload.name.strip().lower()
+            Exercise.user_id == user.id,
+            Exercise.name_key == name_key,
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="You already have an exercise with that name")
     exercise = Exercise(
         user_id=user.id,
-        name=payload.name.strip(),
+        name=name,
+        name_key=name_key,
         muscle_group=payload.muscle_group.strip(),
         equipment=payload.equipment.strip(),
     )

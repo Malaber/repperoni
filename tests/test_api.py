@@ -172,6 +172,8 @@ def test_exercise_catalog_search_and_custom_exercises(client):
     assert created.status_code == 201
     assert created.json()["is_custom"] is True
     assert client.post("/api/v1/exercises", json=payload).status_code == 409
+    case_variant = {**payload, "name": "  pepper PRESS  "}
+    assert client.post("/api/v1/exercises", json=case_variant).status_code == 409
 
 
 def test_complete_workout_and_previous_performance(client):
