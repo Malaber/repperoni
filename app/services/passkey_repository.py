@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from secrets import compare_digest
 from unicodedata import normalize
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -86,8 +87,19 @@ class RepperoniPasskeyRepository:
         self.registration_mode = registration_mode or settings.registration_mode
         self.auth_session_id: UUID | None = None
 
-    async def claim_passkey_ceremony(self, state: Mapping[str, object]) -> None:
+    async def claim_passkey_ceremony(
+        self,
+        state: Mapping[str, object],
+        *,
+        expected_origin: str,
+        expected_rp_id: str | None,
+    ) -> None:
         """Atomically make a signed browser ceremony state single use."""
+        if state.get("origin") != expected_origin or state.get("rp_id") != expected_rp_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Passkey ceremony does not match this application",
+            )
         challenge = state.get("challenge")
         if not isinstance(challenge, str) or not challenge:
             return
@@ -331,5 +343,14 @@ async def get_passkey_repository(
     )
     state = request.session.get(session_key) if session_key else None
     if isinstance(state, Mapping):
-        await repository.claim_passkey_ceremony(state)
+        configured_host = (
+            urlparse(settings.app_base_url).hostname if settings.app_base_url is not None else None
+        )
+        expected_origin = settings.app_base_url or str(request.base_url).rstrip("/")
+        expected_rp_id = settings.webauthn_rp_id or configured_host or request.url.hostname
+        await repository.claim_passkey_ceremony(
+            state,
+            expected_origin=expected_origin,
+            expected_rp_id=expected_rp_id,
+        )
     return repository
