@@ -234,3 +234,91 @@ def test_exercise_name_key_migration_repairs_case_variants(tmp_path, monkeypatch
                     "Pizza",
                 ),
             )
+
+
+def test_set_mutation_migration_backfills_deletion_tombstones(tmp_path, monkeypatch):
+    database = tmp_path / "set-mutations.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{database}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0005_exercise_name_keys")
+
+    user_id = uuid.uuid4().hex
+    workout_id = uuid.uuid4().hex
+    station_id = uuid.uuid4().hex
+    set_id = uuid.uuid4().hex
+    mutation_id = str(uuid.uuid4())
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            (user_id, "mutations@example.com", "Mutations"),
+        )
+        connection.execute(
+            """
+            INSERT INTO workouts (id, user_id, name, started_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (workout_id, user_id, "Workout", "2026-01-01 10:00:00"),
+        )
+        connection.execute(
+            """
+            INSERT INTO workout_stations
+                (id, workout_id, exercise_id, position, started_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                station_id,
+                workout_id,
+                "11111111111141118111111111111111",
+                1,
+                "2026-01-01 10:01:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO set_entries (
+                id,
+                user_id,
+                station_id,
+                set_number,
+                weight_kg,
+                reps,
+                completed_at,
+                client_mutation_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                set_id,
+                user_id,
+                station_id,
+                1,
+                42,
+                6,
+                "2026-01-01 10:02:00",
+                mutation_id,
+            ),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        mutation = connection.execute(
+            """
+            SELECT user_id, client_mutation_id, station_id, set_id, weight_kg, reps
+            FROM set_mutations
+            """
+        ).fetchone()
+        assert mutation == (
+            user_id,
+            mutation_id,
+            station_id,
+            set_id,
+            42,
+            6,
+        )
+        connection.execute("DELETE FROM set_entries WHERE id = ?", (set_id,))
+        connection.commit()
+        assert connection.execute("SELECT set_id FROM set_mutations").fetchone() == (None,)

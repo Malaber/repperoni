@@ -282,6 +282,22 @@ def test_set_delete_and_workout_listing(client):
     assert after_gap.json()["set_number"] == 3
     assert client.delete(f"{url}/{second['id']}").status_code == 204
     assert client.delete(f"{url}/{after_gap.json()['id']}").status_code == 204
+
+    mutation_id = str(uuid.uuid4())
+    mutation_payload = {
+        "weight_kg": 25,
+        "reps": 5,
+        "client_mutation_id": mutation_id,
+    }
+    idempotent = client.post(url, json=mutation_payload)
+    assert idempotent.status_code == 201
+    assert client.delete(f"{url}/{idempotent.json()['id']}").status_code == 204
+    replay = client.post(url, json=mutation_payload)
+    assert replay.status_code == 410
+    assert replay.json()["detail"] == "This set was already logged and later deleted"
+    conflicting_replay = client.post(url, json={**mutation_payload, "reps": 6})
+    assert conflicting_replay.status_code == 409
+
     assert client.get(f"/api/v1/workouts/{workout['id']}").json()["total_sets"] == 0
     assert client.get("/api/v1/workouts", params={"limit": 1}).status_code == 200
 

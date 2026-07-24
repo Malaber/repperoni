@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models import Exercise, SetEntry, User, Workout, WorkoutStation
+from app.models import Exercise, SetEntry, SetMutation, User, Workout, WorkoutStation
 from app.models.exercise import exercise_name_key
 from app.schemas.workouts import (
     ExerciseCreate,
@@ -58,21 +58,38 @@ def _set_out(entry: SetEntry) -> SetOut:
     return SetOut.model_validate(entry)
 
 
-def _idempotent_set_out(
-    entry: SetEntry,
+async def _idempotent_set_out(
+    db: AsyncSession,
+    mutation: SetMutation,
     station_id: UUID,
     payload: SetCreate,
     response: Response,
 ) -> SetOut:
     if (
-        entry.station_id != station_id
-        or entry.weight_kg != payload.weight_kg
-        or entry.reps != payload.reps
-        or entry.rpe != payload.rpe
+        mutation.station_id != station_id
+        or mutation.weight_kg != payload.weight_kg
+        or mutation.reps != payload.reps
+        or mutation.rpe != payload.rpe
     ):
         raise HTTPException(
             status_code=409,
             detail="Client mutation ID was already used for another set",
+        )
+    if mutation.set_id is None:
+        raise HTTPException(
+            status_code=410,
+            detail="This set was already logged and later deleted",
+        )
+    entry = await db.scalar(
+        select(SetEntry).where(
+            SetEntry.id == mutation.set_id,
+            SetEntry.user_id == mutation.user_id,
+        )
+    )
+    if entry is None:
+        raise HTTPException(
+            status_code=410,
+            detail="This set was already logged and later deleted",
         )
     response.status_code = status.HTTP_200_OK
     return _set_out(entry)
@@ -425,14 +442,14 @@ async def add_set(
     workout_id = workout.id
     station_id = station.id
     if payload.client_mutation_id:
-        existing = await db.execute(
-            select(SetEntry).where(
-                SetEntry.user_id == user_id,
-                SetEntry.client_mutation_id == payload.client_mutation_id,
+        existing = await db.scalar(
+            select(SetMutation).where(
+                SetMutation.user_id == user_id,
+                SetMutation.client_mutation_id == payload.client_mutation_id,
             )
         )
-        if entry := existing.scalar_one_or_none():
-            return _idempotent_set_out(entry, station_id, payload, response)
+        if existing is not None:
+            return await _idempotent_set_out(db, existing, station_id, payload, response)
     for _ in range(3):
         await _claim_active_workout(db, workout_id, user_id)
         set_number = await db.scalar(
@@ -452,18 +469,37 @@ async def add_set(
         )
         db.add(entry)
         try:
+            if payload.client_mutation_id:
+                await db.flush()
+                db.add(
+                    SetMutation(
+                        user_id=user_id,
+                        client_mutation_id=payload.client_mutation_id,
+                        station_id=station_id,
+                        set_id=entry.id,
+                        weight_kg=payload.weight_kg,
+                        reps=payload.reps,
+                        rpe=payload.rpe,
+                    )
+                )
             await db.commit()
         except IntegrityError:
             await db.rollback()
             if payload.client_mutation_id:
                 existing = await db.scalar(
-                    select(SetEntry).where(
-                        SetEntry.user_id == user_id,
-                        SetEntry.client_mutation_id == payload.client_mutation_id,
+                    select(SetMutation).where(
+                        SetMutation.user_id == user_id,
+                        SetMutation.client_mutation_id == payload.client_mutation_id,
                     )
                 )
                 if existing is not None:
-                    return _idempotent_set_out(existing, station_id, payload, response)
+                    return await _idempotent_set_out(
+                        db,
+                        existing,
+                        station_id,
+                        payload,
+                        response,
+                    )
             continue
         await db.refresh(entry)
         return _set_out(entry)
