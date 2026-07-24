@@ -1,12 +1,12 @@
 import asyncio
 import uuid
-from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import jwt
 import pytest
 from fastpasskey import PasskeyConflictError, PasskeyCredential
 from fastapi import HTTPException
-from jose import jwt
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
@@ -500,6 +500,7 @@ def test_registration_mode_defaults_to_first_user(monkeypatch):
         {"secret_key": "short"},
         {"secret_key": "replace-with-a-long-random-value"},
         {"secret_key": "repperoni-local-e2e-secret"},
+        {"secret_key": "repperoni-local-e2e-secret-not-for-production"},
         {"secure_cookies": False},
         {"app_base_url": "http://repperoni.example"},
         {"app_base_url": None},

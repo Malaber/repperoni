@@ -11,7 +11,7 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ["REGISTRATION_MODE"] = "open"
 os.environ["APP_BASE_URL"] = "http://localhost"
 os.environ["WEBAUTHN_RP_ID"] = "localhost"
-os.environ["SECRET_KEY"] = "repperoni-pytest-secret"
+os.environ["SECRET_KEY"] = "repperoni-pytest-secret-not-for-production"
 os.environ["AUTO_MIGRATE"] = "false"
 
 import pytest  # noqa: E402

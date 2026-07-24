@@ -8,13 +8,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEPLOYED_ENVIRONMENTS = {"production", "review"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 # Public sentinel: deployed configuration rejects it.
-PLACEHOLDER_SECRET = "change-me-in-production"  # nosec B105
+PLACEHOLDER_SECRET = "change-me-in-production-use-32-random-bytes"  # nosec B105
 INSECURE_SECRET_KEYS = frozenset(
     {
         PLACEHOLDER_SECRET,
         "replace-with-a-long-random-value",
         "repperoni-local-e2e-secret",
+        "repperoni-local-e2e-secret-not-for-production",
         "repperoni-pytest-secret",
+        "repperoni-pytest-secret-not-for-production",
     }
 )
 RegistrationMode = Literal["closed", "first-user", "open"]

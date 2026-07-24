@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 from app.core.config import settings
 
@@ -45,16 +46,13 @@ def decode_access_token(token: str) -> AccessTokenClaims | None:
             audience=TOKEN_AUDIENCE,
             issuer=TOKEN_ISSUER,
             options={
-                "require_aud": True,
-                "require_exp": True,
-                "require_iat": True,
-                "require_iss": True,
-                "require_sub": True,
+                "require": ["aud", "exp", "iat", "iss", "sid", "sub"],
+                "strict_aud": True,
             },
         )
         return AccessTokenClaims(
             user_id=UUID(payload["sub"]),
             session_id=UUID(payload["sid"]),
         )
-    except (JWTError, KeyError, TypeError, ValueError):
+    except (InvalidTokenError, KeyError, TypeError, ValueError):
         return None

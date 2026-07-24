@@ -1,7 +1,12 @@
 import sys
 from pathlib import Path
 
-from tasks import _latest_stable_version, _uvicorn_command, _version_values
+from tasks import (
+    _latest_stable_version,
+    _uvicorn_command,
+    _version_values,
+    _write_public_audit_lock,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,3 +50,25 @@ def test_environment_bootstrap_is_hash_locked():
     assert "--no-deps --no-build-isolation -e ." in tasks
     assert "--ignore-matching-lines='^[[:space:]]*#'" in tasks
     assert 'c.run("npm run check:js")' in tasks
+
+
+def test_public_audit_lock_excludes_complete_direct_url_entries(tmp_path):
+    source = tmp_path / "requirements.lock"
+    target = tmp_path / "audit.lock"
+    source.write_text(
+        "public==1.2.3 \\\n"
+        "    --hash=sha256:public\n"
+        "private @ https://example.invalid/private-2.0.whl#sha256=private \\\n"
+        "    --hash=sha256:private\n"
+        "other==3.0 \\\n"
+        "    --hash=sha256:other\n",
+        encoding="utf-8",
+    )
+
+    assert _write_public_audit_lock(source, target) == ["private"]
+    assert target.read_text(encoding="utf-8") == (
+        "public==1.2.3 \\\n"
+        "    --hash=sha256:public\n"
+        "other==3.0 \\\n"
+        "    --hash=sha256:other\n"
+    )

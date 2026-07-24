@@ -33,3 +33,9 @@ def test_production_and_development_locks_have_deliberate_scope():
     assert "pip-audit==2.10.1" in development
     assert "pip-tools==7.6.0" in development
     assert "invoke==3.0.3" in bootstrap
+
+
+def test_dependency_audit_preserves_hashes_and_scans_direct_artifact_code():
+    tasks = (ROOT / "tasks.py").read_text(encoding="utf-8")
+    assert "--disable-pip --require-hashes --strict" in tasks
+    assert '_installed_package_path("fastpasskey")' in tasks
