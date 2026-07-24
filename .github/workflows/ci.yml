@@ -148,9 +148,21 @@ jobs:
           cache-from: type=gha,scope=docker-test
           cache-to: type=gha,mode=max,scope=docker-test
 
+  docker_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: {python-version: '${{ env.PYTHON_VERSION }}'}
+      - run: python -m pip install --require-hashes -r requirements-bootstrap.lock
+      - run: python -m invoke docker-smoke --revision="${{ env.SOURCE_SHA }}"
+
   docker_platform:
     needs:
-      [python_black, python_flake8, python_pytest, javascript_test, browser_e2e, security, docker_test]
+      [python_black, python_flake8, python_pytest, javascript_test, browser_e2e, security, docker_test, docker_smoke]
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false

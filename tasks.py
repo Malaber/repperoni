@@ -1,6 +1,9 @@
+import json
 import os
 import re
+import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,6 +21,7 @@ TMP = ROOT / ".tmp"
 PID_FILE = TMP / "repperoni.pid"
 LOG_FILE = TMP / "repperoni.log"
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIRECT_URL_REQUIREMENT_PATTERN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)\s+@\s+\S+")
 MACOS_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
@@ -150,6 +154,25 @@ def _wait_for_url(url: str, timeout: float = 30) -> None:
             last_error = exc
         time.sleep(0.25)
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
+
+
+def _verify_version_url(url: str, expected_revision: str) -> None:
+    if not REVISION_PATTERN.fullmatch(expected_revision):
+        raise ValueError("expected revision must be a full lowercase Git SHA")
+    with urlopen(url, timeout=5) as response:
+        payload = json.load(response)
+    if payload.get("status") != "ok" or payload.get("revision") != expected_revision:
+        raise RuntimeError(
+            f"Unexpected deployed version at {url}: "
+            f"status={payload.get('status')!r} revision={payload.get('revision')!r}"
+        )
+
+
+def _resolved_revision(revision: str = "") -> str:
+    resolved = revision or _git_lines("rev-parse", "HEAD")[0]
+    if not REVISION_PATTERN.fullmatch(resolved):
+        raise ValueError("revision must be a full lowercase Git SHA")
+    return resolved
 
 
 def _write_public_audit_lock(source: Path, target: Path) -> list[str]:
@@ -426,12 +449,19 @@ def check_browser_e2e(c):
 
 @task
 def verify(c):
-    """Run the same Python, JavaScript, and browser checks as CI."""
+    """Run source, security, lock, browser, and available container checks."""
+    check_locks.body(c)
     check_python.body(c)
     install_js.body(c)
     check_js.body(c)
+    security_check.body(c)
     install_browser.body(c)
     check_browser_e2e.body(c)
+    if shutil.which("docker"):
+        docker_build_test.body(c)
+        docker_smoke.body(c)
+    else:
+        print("Docker is unavailable; CI still requires container tests and production smoke.")
 
 
 @task
@@ -441,8 +471,15 @@ def verify_http(_, base_url="http://localhost:8000"):
 
 
 @task
-def docker_build(c):
-    c.run("docker build --target production --build-arg REPPERONI_VERSION=dev -t repperoni:dev .")
+def docker_build(c, version="dev", revision="unknown"):
+    if revision != "unknown" and not REVISION_PATTERN.fullmatch(revision):
+        raise ValueError("revision must be 'unknown' or a full lowercase Git SHA")
+    c.run(
+        "docker build --target production "
+        f"--build-arg REPPERONI_VERSION={shlex.quote(version)} "
+        f"--build-arg REPPERONI_REVISION={shlex.quote(revision)} "
+        "-t repperoni:dev ."
+    )
 
 
 @task
@@ -451,14 +488,45 @@ def docker_build_test(c):
 
 
 @task
-def docker_smoke(c, port=8010):
-    docker_build.body(c)
-    name = "repperoni-smoke"
-    c.run(f"docker run -d --rm --name {name} -p {port}:8000 repperoni:dev")
+def docker_smoke(c, port=8010, revision=""):
+    port = int(port)
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    resolved_revision = _resolved_revision(revision)
+    docker_build.body(
+        c,
+        version=f"smoke-{resolved_revision[:12]}",
+        revision=resolved_revision,
+    )
+    name = f"repperoni-smoke-{os.getpid()}"
+    run_command = (
+        f"docker run -d --name {shlex.quote(name)} "
+        f"-p 127.0.0.1:{port}:8000 "
+        "-e APP_BASE_URL=https://repperoni.invalid "
+        "-e ENVIRONMENT=production "
+        "-e REGISTRATION_MODE=closed "
+        "-e SECRET_KEY "
+        "-e SECURE_COOKIES=true "
+        "-e WEBAUTHN_RP_ID=repperoni.invalid "
+        "repperoni:dev"
+    )
+    smoke_environment = {"SECRET_KEY": secrets.token_hex(32)}
+    started = False
     try:
+        c.run(run_command, env=smoke_environment)
+        started = True
         _wait_for_url(f"http://localhost:{port}/health", 45)
+        _verify_version_url(
+            f"http://localhost:{port}/health/version",
+            resolved_revision,
+        )
+        print(f"Production image healthy at revision {resolved_revision}")
+    except Exception:
+        if started:
+            c.run(f"docker logs {shlex.quote(name)}", warn=True)
+        raise
     finally:
-        c.run(f"docker stop {name}", warn=True)
+        c.run(f"docker rm --force {shlex.quote(name)}", warn=True)
 
 
 @task(help={"ref_name": "Git ref name", "run_number": "GitHub Actions run number"})

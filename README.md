@@ -52,12 +52,13 @@ Run `.venv/bin/inv --list` for the canonical list. The important targets are:
 | `check-js` | JavaScript unit and coverage gate |
 | `security-check` | Audit locked dependencies and Python security patterns |
 | `browser-e2e-desktop`, `browser-e2e-mobile` | Real Chromium + virtual-passkey user journeys |
-| `verify` | Full local gate matching CI |
+| `verify` | Source, lock, security, browser, and available local Docker gates |
 | `docker-build`, `docker-build-test`, `docker-smoke` | Container build and black-box checks |
 | `compute-version` | Stable/RC release version used by CI |
 
 Supported operations belong behind Invoke targets so local development and CI use the same entry
-points.
+points. `verify` runs container test-build and production smoke checks when Docker is available,
+and says when they are deferred to mandatory CI jobs on a Docker-less machine.
 
 ## Deployment
 

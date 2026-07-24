@@ -16,6 +16,10 @@ def test_ci_gates_images_on_all_checks():
     assert "browser_e2e" in workflow
     assert "linux/amd64" in workflow and "linux/arm64" in workflow
     assert "REPPERONI_REVISION=${{ env.SOURCE_SHA }}" in workflow
+    assert "docker_smoke:" in workflow
+    assert 'python -m invoke docker-smoke --revision="${{ env.SOURCE_SHA }}"' in workflow
+    needs = workflow.split("  docker_platform:", 1)[1].split("    runs-on:", 1)[0]
+    assert "docker_smoke" in needs
     assert "pull_request:" in workflow
     assert "packages: write" not in workflow
     assert workflow.count("persist-credentials: false") == workflow.count("actions/checkout@")
