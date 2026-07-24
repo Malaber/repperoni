@@ -39,6 +39,7 @@ COPY requirements-bootstrap.lock ./
 COPY tests ./tests
 COPY tasks.py ./tasks.py
 COPY Dockerfile docker-compose.yml ./
+COPY .dockerignore ./
 COPY .github ./.github
 COPY deploy ./deploy
 COPY scripts ./scripts
