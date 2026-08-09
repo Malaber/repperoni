@@ -8,7 +8,6 @@ from tasks import (
     _write_public_audit_lock,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

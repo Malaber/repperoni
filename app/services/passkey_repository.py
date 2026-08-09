@@ -22,7 +22,6 @@ from app.services.auth_sessions import (
     revoke_auth_session_id,
 )
 
-
 REGISTRATION_ROUTE_SUFFIXES = frozenset(
     {
         "/auth/register/options",

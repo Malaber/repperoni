@@ -7,7 +7,6 @@ from jwt.exceptions import InvalidTokenError
 
 from app.core.config import settings
 
-
 # Public JWT metadata, not credentials.
 TOKEN_ALGORITHM = "HS256"  # nosec B105
 TOKEN_AUDIENCE = "repperoni-api"  # nosec B105
@@ -54,5 +53,5 @@ def decode_access_token(token: str) -> AccessTokenClaims | None:
             user_id=UUID(payload["sub"]),
             session_id=UUID(payload["sid"]),
         )
-    except (InvalidTokenError, KeyError, TypeError, ValueError):
+    except InvalidTokenError, KeyError, TypeError, ValueError:
         return None
