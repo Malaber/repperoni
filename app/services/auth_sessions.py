@@ -9,7 +9,6 @@ from starlette.requests import HTTPConnection
 from app.core.config import settings
 from app.models import AuthSession, User
 
-
 SESSION_KEY = "auth_session_id"
 
 

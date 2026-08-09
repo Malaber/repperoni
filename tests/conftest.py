@@ -4,7 +4,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-
 TEST_DATABASE = Path(tempfile.gettempdir()) / f"repperoni-pytest-{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE}"
 os.environ["ENVIRONMENT"] = "test"

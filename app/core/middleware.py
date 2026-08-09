@@ -7,7 +7,6 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import Settings
 
-
 logger = logging.getLogger("uvicorn.error")
 UNSAFE_METHODS = {"DELETE", "PATCH", "POST", "PUT"}
 STRICT_CSP = (
