@@ -13,13 +13,15 @@ if [[ -n "${ASC_KEY_PATH:-}" ]]; then
 fi
 cd "$package_dir"
 xcodegen generate
-xcodebuild -project RepperoniApp.xcodeproj -scheme Repperoni \
+# Xcode must use Apple system helpers, especially rsync during IPA export.
+xcodebuild_bin=$(command -v xcodebuild)
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$xcodebuild_bin" -project RepperoniApp.xcodeproj -scheme Repperoni \
   -configuration Release -destination 'generic/platform=iOS' \
   -archivePath "$release_dir/Repperoni.xcarchive" \
   DEVELOPMENT_TEAM=VWKG94374J PRODUCT_BUNDLE_IDENTIFIER=de.malaber.repperoni \
   MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$build" CODE_SIGN_STYLE=Automatic \
   "${auth[@]}" archive
-xcodebuild -exportArchive -archivePath "$release_dir/Repperoni.xcarchive" \
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin "$xcodebuild_bin" -exportArchive -archivePath "$release_dir/Repperoni.xcarchive" \
   -exportPath "$release_dir/export" -exportOptionsPlist "$package_dir/ExportOptions.TestFlight.plist" \
   "${auth[@]}"
 echo "TestFlight upload accepted. Archive: $release_dir/Repperoni.xcarchive"

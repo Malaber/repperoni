@@ -17,6 +17,11 @@ def test_cli_archive_and_upload_arguments(tmp_path, api_key):
     for name in ("xcodegen", "xcodebuild"):
         executable = tmp_path / name
         executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$REPPERONI_RELEASE_TEST_LOG"\n')
+        if name == "xcodebuild":
+            executable.write_text(
+                executable.read_text()
+                + 'test "$PATH" = "/usr/bin:/bin:/usr/sbin:/sbin" || exit 42\n'
+            )
         executable.chmod(0o755)
     environment = {
         **os.environ,
