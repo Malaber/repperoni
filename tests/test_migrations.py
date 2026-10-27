@@ -305,12 +305,10 @@ def test_set_mutation_migration_backfills_deletion_tombstones(tmp_path, monkeypa
 
     with closing(sqlite3.connect(database)) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        mutation = connection.execute(
-            """
+        mutation = connection.execute("""
             SELECT user_id, client_mutation_id, station_id, set_id, weight_kg, reps
             FROM set_mutations
-            """
-        ).fetchone()
+            """).fetchone()
         assert mutation == (
             user_id,
             mutation_id,

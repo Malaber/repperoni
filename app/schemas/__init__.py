@@ -2,5 +2,4 @@
 
 from app.schemas.errors import ErrorOut
 
-
 __all__ = ["ErrorOut"]

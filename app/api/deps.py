@@ -11,7 +11,6 @@ from app.core.security import decode_access_token
 from app.models import AuthSession, User
 from app.services.auth_sessions import get_session_user
 
-
 bearer_scheme = HTTPBearer(
     bearerFormat="JWT",
     scheme_name="BearerAuth",
