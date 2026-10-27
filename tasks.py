@@ -15,7 +15,6 @@ from urllib.request import urlopen
 
 from invoke import task
 
-
 ROOT = Path(__file__).resolve().parent
 TMP = ROOT / ".tmp"
 PID_FILE = TMP / "repperoni.pid"
@@ -104,7 +103,7 @@ def _read_pid() -> int | None:
         return None
     try:
         return int(PID_FILE.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

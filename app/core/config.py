@@ -4,7 +4,6 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 DEPLOYED_ENVIRONMENTS = {"production", "review"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 # Public sentinel: deployed configuration rejects it.

@@ -31,7 +31,6 @@ from app.schemas.workouts import (
     WorkoutSummaryOut,
 )
 
-
 router = APIRouter(tags=["workouts"])
 ZERO = Decimal("0.00")
 

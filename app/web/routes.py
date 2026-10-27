@@ -13,7 +13,6 @@ from app.core.database import get_db
 from app.models import User
 from app.services.auth_sessions import revoke_auth_session
 
-
 router = APIRouter(tags=["web"])
 templates = Jinja2Templates(directory="app/web/templates")
 static_root = Path("app/web/static")

@@ -13,7 +13,6 @@ from tasks import (
     docker_smoke,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
