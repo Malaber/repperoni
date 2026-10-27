@@ -1,3 +1,5 @@
+import {createHash, randomBytes} from "node:crypto";
+import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {mkdir, writeFile} from "node:fs/promises";
 import {pathToFileURL} from "node:url";
@@ -97,6 +99,31 @@ async function runJourney(browser, createVirtualAuthenticator, device) {
     await page.getByTestId("signup-submit").click();
     await page.waitForURL(`${baseUrl}/`);
     await expectText(page, '[data-view="dashboard"] h1', "shredded");
+
+    // Real browser passkey session authorizes native PKCE; no mocked ceremony.
+    const verifier = randomBytes(32).toString("base64url");
+    const state = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authorization = await context.request.get(`${baseUrl}/api/v1/auth/mobile/authorize`, {
+      params: {state, code_challenge: challenge}, maxRedirects: 0,
+    });
+    assert.equal(authorization.status(), 303);
+    const callback = new URL(authorization.headers().location);
+    assert.equal(callback.protocol, "de.malaber.repperoni:");
+    assert.equal(callback.searchParams.get("state"), state);
+    const exchange = {code: callback.searchParams.get("code"), code_verifier: verifier};
+    const tokenResponse = await context.request.post(`${baseUrl}/api/v1/auth/mobile/token`, {
+      data: exchange, headers: {"X-Repperoni-CSRF": "1"},
+    });
+    assert.equal(tokenResponse.status(), 200);
+    const nativeToken = (await tokenResponse.json()).access_token;
+    assert.equal((await context.request.get(`${baseUrl}/api/v1/exercises`, {
+      headers: {Authorization: `Bearer ${nativeToken}`},
+    })).status(), 200);
+    assert.equal((await context.request.post(`${baseUrl}/api/v1/auth/mobile/token`, {
+      data: exchange, headers: {"X-Repperoni-CSRF": "1"},
+    })).status(), 401);
+
 
     await page.getByRole("button", {name: "Sign out"}).click();
     await page.waitForURL(/\/login/);

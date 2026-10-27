@@ -89,3 +89,11 @@ deploy/webhooker/ review and production deployment bundle
 Repperoni's spotter is a determined pepperoni-pizza slice doing reps. The generated mascot is a
 text-free project asset so it works in headers, empty states, PWA icons, and future native apps.
 The product palette is tomato red, near-black, warm cheese gold, and crust orange.
+
+## iOS companion
+
+[Repperoni for iPhone and iPad](ios/RepperoniIOS/README.md) focuses on current
+training, fast rep entry, last performance and statistics. Uses the shared
+Malaber FastPasskey browser flow with a native PKCE handoff. Bundle ID/SKU:
+`de.malaber.repperoni`. Invoke targets cover simulator E2E and CLI-only TestFlight
+uploads; GitHub Actions tests iPhone and iPad against a real isolated backend.

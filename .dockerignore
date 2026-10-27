@@ -13,3 +13,5 @@ htmlcov
 .env
 deploy/secrets
 deploy/webhooker/secrets/*.env
+
+ios/

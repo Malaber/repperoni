@@ -537,3 +537,122 @@ def compute_version(_, ref_name="", run_number=""):
         raise ValueError("compute-version requires ref_name and run_number")
     values = _version_values(resolved_ref, int(resolved_run), _git_lines("tag", "--list", "v*"))
     _write_github_output(values)
+
+
+IOS_ROOT = ROOT / "ios" / "RepperoniIOS"
+
+
+@task
+def generate_ios_project(c):
+    """Generate the native iOS project from its checked-in specification."""
+    c.run(f"xcodegen generate --spec {shlex.quote(str(IOS_ROOT / 'project.yml'))}")
+
+
+@task(generate_ios_project)
+def build_ios_simulator(c):
+    """Build the native app without signing."""
+    c.run(
+        f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+        "-scheme Repperoni -configuration Debug -sdk iphonesimulator "
+        f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+        "CODE_SIGNING_ALLOWED=NO build"
+    )
+
+
+@task(generate_ios_project)
+def check_ios_ui(c, destination=""):
+    if not destination:
+        destination = "platform=iOS Simulator,id=" + _ios_simulator(c, "iPhone")
+    """Exercise native UI against an isolated real backend."""
+    start_app.body(c, port=8017, e2e=True)
+    try:
+        wait_for_app.body(c, port=8017)
+        c.run(f"{_bin('python')} scripts/seed_ios_e2e.py")
+        generate_ios_project.body(c)
+        c.run(
+            f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+            "-scheme Repperoni -configuration Debug "
+            f"-destination {shlex.quote(destination)} "
+            f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+            "CODE_SIGNING_ALLOWED=NO test"
+        )
+    finally:
+        stop_app.body(c)
+        (IOS_ROOT / "UITests" / "Fixture.json").unlink(missing_ok=True)
+
+
+@task
+def upload_ios_testflight(c, version="1.0.0", build_number="1"):
+    """Archive and upload to TestFlight using CLI signing or an ASC API key."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("version must be major.minor.patch")
+    if not re.fullmatch(r"[1-9]\d*", build_number):
+        raise ValueError("build-number must be a positive integer")
+    c.run(
+        f"bash {shlex.quote(str(IOS_ROOT / 'Scripts' / 'upload_testflight.sh'))} "
+        f"{shlex.quote(version)} {shlex.quote(build_number)}"
+    )
+
+
+@task
+def list_ios_simulators(c):
+    """List installed simulator destinations."""
+    c.run("xcrun simctl list devices available")
+
+
+@task(generate_ios_project)
+def build_ios_release(c):
+    """Compile Release for physical devices without uploading or signing."""
+    c.run(
+        f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+        "-scheme Repperoni -configuration Release -destination 'generic/platform=iOS' "
+        f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+        "CODE_SIGNING_ALLOWED=NO build"
+    )
+
+
+@task
+def format_ios(c):
+    """Format native Swift sources with Xcode's formatter."""
+    c.run(
+        "xcrun swift-format format --in-place --recursive "
+        f"{shlex.quote(str(IOS_ROOT / 'App'))} {shlex.quote(str(IOS_ROOT / 'UITests'))}"
+    )
+
+
+@task
+def export_ios_test_screenshots(c, result):
+    """Export XCTest attachments for visual inspection."""
+    output = TMP / "ios-screenshots"
+    output.mkdir(parents=True, exist_ok=True)
+    c.run(
+        f"xcrun xcresulttool export attachments --path {shlex.quote(result)} "
+        f"--output-path {shlex.quote(str(output))}"
+    )
+
+
+def _ios_simulator(c, family):
+    if family not in {"iPhone", "iPad"}:
+        raise ValueError("family must be iPhone or iPad")
+    result = c.run("xcrun simctl list devices available --json", hide=True)
+    devices = json.loads(result.stdout)["devices"]
+    for runtime in sorted(devices, reverse=True):
+        if "iOS" not in runtime:
+            continue
+        for device in devices[runtime]:
+            if device["isAvailable"] and device["name"].startswith(family):
+                return device["udid"]
+    raise RuntimeError(f"No available {family} simulator")
+
+
+@task
+def select_ios_simulator(c, family="iPhone"):
+    """Select an installed iOS simulator and expose its ID to GitHub Actions."""
+    _write_github_output({"id": _ios_simulator(c, family)})
+
+
+@task
+def install_ios_tools(c):
+    """Install XcodeGen from Homebrew when missing."""
+    if not shutil.which("xcodegen"):
+        c.run("brew install xcodegen")
