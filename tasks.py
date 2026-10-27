@@ -1,6 +1,9 @@
+import json
 import os
 import re
+import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -17,6 +20,7 @@ TMP = ROOT / ".tmp"
 PID_FILE = TMP / "repperoni.pid"
 LOG_FILE = TMP / "repperoni.log"
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIRECT_URL_REQUIREMENT_PATTERN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)\s+@\s+\S+")
 MACOS_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
@@ -151,6 +155,25 @@ def _wait_for_url(url: str, timeout: float = 30) -> None:
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
 
 
+def _verify_version_url(url: str, expected_revision: str) -> None:
+    if not REVISION_PATTERN.fullmatch(expected_revision):
+        raise ValueError("expected revision must be a full lowercase Git SHA")
+    with urlopen(url, timeout=5) as response:
+        payload = json.load(response)
+    if payload.get("status") != "ok" or payload.get("revision") != expected_revision:
+        raise RuntimeError(
+            f"Unexpected deployed version at {url}: "
+            f"status={payload.get('status')!r} revision={payload.get('revision')!r}"
+        )
+
+
+def _resolved_revision(revision: str = "") -> str:
+    resolved = revision or _git_lines("rev-parse", "HEAD")[0]
+    if not REVISION_PATTERN.fullmatch(resolved):
+        raise ValueError("revision must be a full lowercase Git SHA")
+    return resolved
+
+
 def _write_public_audit_lock(source: Path, target: Path) -> list[str]:
     """Project the hash lock to packages supported by public advisory services."""
     lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -229,13 +252,15 @@ def bootstrap_ci(c):
 
 
 @task
-def lock_deps(c):
+def lock_deps(c, upgrade_package=""):
     """Regenerate hash-locked bootstrap, production, and development dependencies."""
     environment = {
         **_clean_install_env(),
         "CUSTOM_COMPILE_COMMAND": ".venv/bin/inv lock-deps",
     }
     common = "--quiet --generate-hashes --allow-unsafe --strip-extras --newline=lf"
+    if upgrade_package:
+        common += f" --upgrade-package {shlex.quote(upgrade_package)}"
     c.run(
         f"{_bin('pip-compile')} {common} --output-file=requirements-bootstrap.lock "
         "requirements-bootstrap.in",
@@ -425,12 +450,19 @@ def check_browser_e2e(c):
 
 @task
 def verify(c):
-    """Run the same Python, JavaScript, and browser checks as CI."""
+    """Run source, security, lock, browser, and available container checks."""
+    check_locks.body(c)
     check_python.body(c)
     install_js.body(c)
     check_js.body(c)
+    security_check.body(c)
     install_browser.body(c)
     check_browser_e2e.body(c)
+    if shutil.which("docker"):
+        docker_build_test.body(c)
+        docker_smoke.body(c)
+    else:
+        print("Docker is unavailable; CI still requires container tests and production smoke.")
 
 
 @task
@@ -440,8 +472,15 @@ def verify_http(_, base_url="http://localhost:8000"):
 
 
 @task
-def docker_build(c):
-    c.run("docker build --target production --build-arg REPPERONI_VERSION=dev -t repperoni:dev .")
+def docker_build(c, version="dev", revision="unknown"):
+    if revision != "unknown" and not REVISION_PATTERN.fullmatch(revision):
+        raise ValueError("revision must be 'unknown' or a full lowercase Git SHA")
+    c.run(
+        "docker build --target production "
+        f"--build-arg REPPERONI_VERSION={shlex.quote(version)} "
+        f"--build-arg REPPERONI_REVISION={shlex.quote(revision)} "
+        "-t repperoni:dev ."
+    )
 
 
 @task
@@ -450,14 +489,45 @@ def docker_build_test(c):
 
 
 @task
-def docker_smoke(c, port=8010):
-    docker_build.body(c)
-    name = "repperoni-smoke"
-    c.run(f"docker run -d --rm --name {name} -p {port}:8000 repperoni:dev")
+def docker_smoke(c, port=8010, revision=""):
+    port = int(port)
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    resolved_revision = _resolved_revision(revision)
+    docker_build.body(
+        c,
+        version=f"smoke-{resolved_revision[:12]}",
+        revision=resolved_revision,
+    )
+    name = f"repperoni-smoke-{os.getpid()}"
+    run_command = (
+        f"docker run -d --name {shlex.quote(name)} "
+        f"-p 127.0.0.1:{port}:8000 "
+        "-e APP_BASE_URL=https://repperoni.invalid "
+        "-e ENVIRONMENT=production "
+        "-e REGISTRATION_MODE=closed "
+        "-e SECRET_KEY "
+        "-e SECURE_COOKIES=true "
+        "-e WEBAUTHN_RP_ID=repperoni.invalid "
+        "repperoni:dev"
+    )
+    smoke_environment = {"SECRET_KEY": secrets.token_hex(32)}
+    started = False
     try:
+        c.run(run_command, env=smoke_environment)
+        started = True
         _wait_for_url(f"http://localhost:{port}/health", 45)
+        _verify_version_url(
+            f"http://localhost:{port}/health/version",
+            resolved_revision,
+        )
+        print(f"Production image healthy at revision {resolved_revision}")
+    except Exception:
+        if started:
+            c.run(f"docker logs {shlex.quote(name)}", warn=True)
+        raise
     finally:
-        c.run(f"docker stop {name}", warn=True)
+        c.run(f"docker rm --force {shlex.quote(name)}", warn=True)
 
 
 @task(help={"ref_name": "Git ref name", "run_number": "GitHub Actions run number"})
@@ -468,3 +538,161 @@ def compute_version(_, ref_name="", run_number=""):
         raise ValueError("compute-version requires ref_name and run_number")
     values = _version_values(resolved_ref, int(resolved_run), _git_lines("tag", "--list", "v*"))
     _write_github_output(values)
+
+
+IOS_ROOT = ROOT / "ios" / "RepperoniIOS"
+
+
+def _ios_release_version(tags: list[str], head_tags: list[str]) -> str:
+    stable = [tag for tag in head_tags if STABLE_TAG_PATTERN.fullmatch(tag)]
+    if stable:
+        return _latest_stable_version(stable)
+    return _version_values("main", 1, tags)["base_version"]
+
+
+def _current_ios_version() -> str:
+    return _ios_release_version(
+        _git_lines("tag", "--list", "v*"), _git_lines("tag", "--points-at", "HEAD")
+    )
+
+
+@task
+def generate_ios_project(c):
+    """Generate the native iOS project using the automatic release version."""
+    (IOS_ROOT / "Version.xcconfig").write_text(
+        f"MARKETING_VERSION = {_current_ios_version()}\n", encoding="utf-8"
+    )
+    c.run(f"xcodegen generate --spec {shlex.quote(str(IOS_ROOT / 'project.yml'))}")
+
+
+@task(generate_ios_project)
+def build_ios_simulator(c):
+    """Build the native app without signing."""
+    c.run(
+        f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+        "-scheme Repperoni -configuration Debug -sdk iphonesimulator "
+        f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+        "CODE_SIGNING_ALLOWED=NO build"
+    )
+
+
+@task(generate_ios_project)
+def check_ios_ui(c, destination=""):
+    if not destination:
+        destination = "platform=iOS Simulator,id=" + _ios_simulator(c, "iPhone")
+    """Exercise native UI against an isolated real backend."""
+    start_app.body(c, port=8017, e2e=True)
+    try:
+        wait_for_app.body(c, port=8017)
+        c.run(f"{_bin('python')} scripts/seed_ios_e2e.py")
+        generate_ios_project.body(c)
+        c.run(
+            f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+            "-scheme Repperoni -configuration Debug "
+            f"-destination {shlex.quote(destination)} "
+            f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+            "CODE_SIGNING_ALLOWED=NO test"
+        )
+    finally:
+        stop_app.body(c)
+        (IOS_ROOT / "UITests" / "Fixture.json").unlink(missing_ok=True)
+
+
+@task
+def upload_ios_testflight(c, version="", build_number="1"):
+    """Archive and upload the current automatic release version to TestFlight."""
+    c.run("git fetch origin --tags")
+    version = version or _current_ios_version()
+    generate_ios_project.body(c)
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("version must be major.minor.patch")
+    if not re.fullmatch(r"[1-9]\d*", build_number):
+        raise ValueError("build-number must be a positive integer")
+    c.run(
+        f"bash {shlex.quote(str(IOS_ROOT / 'Scripts' / 'upload_testflight.sh'))} "
+        f"{shlex.quote(version)} {shlex.quote(build_number)}"
+    )
+
+
+@task
+def list_ios_simulators(c):
+    """List installed simulator destinations."""
+    c.run("xcrun simctl list devices available")
+
+
+@task(generate_ios_project)
+def build_ios_release(c):
+    """Compile Release for physical devices without uploading or signing."""
+    c.run(
+        f"xcodebuild -project {shlex.quote(str(IOS_ROOT / 'RepperoniApp.xcodeproj'))} "
+        "-scheme Repperoni -configuration Release -destination 'generic/platform=iOS' "
+        f"-derivedDataPath {shlex.quote(str(IOS_ROOT / 'DerivedData'))} "
+        "CODE_SIGNING_ALLOWED=NO build"
+    )
+
+
+@task
+def format_ios(c):
+    """Format native Swift sources with Xcode's formatter."""
+    c.run(
+        "xcrun swift-format format --in-place --recursive "
+        f"{shlex.quote(str(IOS_ROOT / 'App'))} {shlex.quote(str(IOS_ROOT / 'UITests'))}"
+    )
+
+
+@task
+def export_ios_test_screenshots(c, result):
+    """Export XCTest attachments for visual inspection."""
+    output = TMP / "ios-screenshots"
+    output.mkdir(parents=True, exist_ok=True)
+    c.run(
+        f"xcrun xcresulttool export attachments --path {shlex.quote(result)} "
+        f"--output-path {shlex.quote(str(output))}"
+    )
+
+
+def _ios_simulator(c, family):
+    if family not in {"iPhone", "iPad"}:
+        raise ValueError("family must be iPhone or iPad")
+    result = c.run("xcrun simctl list devices available --json", hide=True)
+    devices = json.loads(result.stdout)["devices"]
+    for runtime in sorted(devices, reverse=True):
+        if "iOS" not in runtime:
+            continue
+        for device in devices[runtime]:
+            if device["isAvailable"] and device["name"].startswith(family):
+                return device["udid"]
+    raise RuntimeError(f"No available {family} simulator")
+
+
+@task
+def select_ios_simulator(c, family="iPhone"):
+    """Select an installed iOS simulator and expose its ID to GitHub Actions."""
+    _write_github_output({"id": _ios_simulator(c, family)})
+
+
+@task
+def install_ios_tools(c):
+    """Install XcodeGen from Homebrew when missing."""
+    if not shutil.which("xcodegen"):
+        c.run("brew install xcodegen")
+
+
+@task
+def update_js_audit(c):
+    """Apply compatible npm security updates to the package lock."""
+    c.run("npm audit fix")
+
+
+@task
+def inspect_python_image(c):
+    """Pull the current Python base image and show its registry digest."""
+    c.run("docker pull python:3.14-slim")
+    c.run("docker image inspect python:3.14-slim --format '{{json .RepoDigests}}'")
+
+
+@task
+def boot_ios_simulator(c, device):
+    """Wait for a selected simulator to finish booting before XCTest launches."""
+    c.run(f"xcrun simctl boot {shlex.quote(device)}", warn=True)
+    c.run(f"xcrun simctl bootstatus {shlex.quote(device)} -b")

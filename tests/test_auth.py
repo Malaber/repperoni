@@ -330,7 +330,11 @@ def test_passkey_verification_ceremonies_are_single_use():
     async def scenario():
         route_path = "/api/v1/auth/login/verify"
         session_key = VERIFY_ROUTE_SESSION_KEYS["/auth/login/verify"]
-        state = {"challenge": f"challenge-{uuid.uuid4()}"}
+        state = {
+            "challenge": f"challenge-{uuid.uuid4()}",
+            "origin": settings.app_base_url,
+            "rp_id": settings.webauthn_rp_id,
+        }
         request = request_with_session({session_key: state})
         request.scope["route"] = SimpleNamespace(path=route_path)
         async with SessionLocal() as db:
@@ -341,6 +345,38 @@ def test_passkey_verification_ceremonies_are_single_use():
             with pytest.raises(HTTPException, match="already used") as captured:
                 await get_passkey_repository(replay, db)
             assert captured.value.status_code == 400
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("origin", "https://attacker.repperoni-review.example"),
+        ("rp_id", "attacker.example"),
+    ],
+)
+def test_passkey_verification_rejects_forged_application_binding(field, forged_value):
+    async def scenario():
+        route_path = "/api/v1/auth/login/verify"
+        session_key = VERIFY_ROUTE_SESSION_KEYS["/auth/login/verify"]
+        state = {
+            "challenge": f"challenge-{uuid.uuid4()}",
+            "origin": settings.app_base_url,
+            "rp_id": settings.webauthn_rp_id,
+        }
+        forged_state = {**state, field: forged_value}
+        forged = request_with_session({session_key: forged_state})
+        forged.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            with pytest.raises(HTTPException, match="does not match") as captured:
+                await get_passkey_repository(forged, db)
+            assert captured.value.status_code == 400
+
+        valid = request_with_session({session_key: state})
+        valid.scope["route"] = SimpleNamespace(path=route_path)
+        async with SessionLocal() as db:
+            await get_passkey_repository(valid, db)
 
     asyncio.run(scenario())
 

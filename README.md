@@ -52,12 +52,13 @@ Run `.venv/bin/inv --list` for the canonical list. The important targets are:
 | `check-js` | JavaScript unit and coverage gate |
 | `security-check` | Audit locked dependencies and Python security patterns |
 | `browser-e2e-desktop`, `browser-e2e-mobile` | Real Chromium + virtual-passkey user journeys |
-| `verify` | Full local gate matching CI |
+| `verify` | Source, lock, security, browser, and available local Docker gates |
 | `docker-build`, `docker-build-test`, `docker-smoke` | Container build and black-box checks |
 | `compute-version` | Stable/RC release version used by CI |
 
 Supported operations belong behind Invoke targets so local development and CI use the same entry
-points.
+points. `verify` runs container test-build and production smoke checks when Docker is available,
+and says when they are deferred to mandatory CI jobs on a Docker-less machine.
 
 ## Deployment
 
@@ -88,3 +89,11 @@ deploy/webhooker/ review and production deployment bundle
 Repperoni's spotter is a determined pepperoni-pizza slice doing reps. The generated mascot is a
 text-free project asset so it works in headers, empty states, PWA icons, and future native apps.
 The product palette is tomato red, near-black, warm cheese gold, and crust orange.
+
+## iOS companion
+
+[Repperoni for iPhone and iPad](ios/RepperoniIOS/README.md) focuses on current
+training, fast rep entry, last performance and statistics. Uses the shared
+Malaber FastPasskey browser flow with a native PKCE handoff. Bundle ID/SKU:
+`de.malaber.repperoni`. Invoke targets cover simulator E2E and CLI-only TestFlight
+uploads; GitHub Actions tests iPhone and iPad against a real isolated backend.

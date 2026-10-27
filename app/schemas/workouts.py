@@ -54,7 +54,7 @@ class PerformanceOut(BaseModel):
 
 class SetCreate(BaseModel):
     weight_kg: Decimal = Field(ge=0, le=2000, decimal_places=2)
-    reps: int = Field(ge=1, le=1000)
+    reps: int = Field(ge=1, le=1000, strict=True)
     rpe: Decimal | None = Field(default=None, ge=1, le=10, decimal_places=1)
     client_mutation_id: str | None = Field(default=None, min_length=1, max_length=120)
 
@@ -63,13 +63,17 @@ class SetCreate(BaseModel):
 
 class SetUpdate(BaseModel):
     weight_kg: Decimal | None = Field(default=None, ge=0, le=2000, decimal_places=2)
-    reps: int | None = Field(default=None, ge=1, le=1000)
+    reps: int | None = Field(default=None, ge=1, le=1000, strict=True)
     rpe: Decimal | None = Field(default=None, ge=1, le=10, decimal_places=1)
 
     @model_validator(mode="after")
     def require_change(self):
-        if self.weight_kg is None and self.reps is None and self.rpe is None:
+        if not self.model_fields_set:
             raise ValueError("At least one set field is required")
+        if "weight_kg" in self.model_fields_set and self.weight_kg is None:
+            raise ValueError("weight_kg must not be null")
+        if "reps" in self.model_fields_set and self.reps is None:
+            raise ValueError("reps must not be null")
         return self
 
 

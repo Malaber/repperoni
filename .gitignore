@@ -21,3 +21,7 @@ deploy/webhooker/secrets/*.env
 dist/
 build/
 *-chroma.png
+
+ios/**/DerivedData/
+ios/**/*.xcodeproj/
+ios/**/UITests/Fixture.json

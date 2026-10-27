@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
+ARG PYTHON_IMAGE=python:3.14-slim@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c
 FROM ${PYTHON_IMAGE} AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -49,6 +49,11 @@ USER 10001:10001
 RUN python -m pytest
 
 FROM base AS production
+USER root
+# Dependencies are installed at build time; omit pip and its bundled installer wheels.
+RUN python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.14/ensurepip
+USER 10001:10001
 ARG REPPERONI_VERSION=0.0.0
 ARG REPPERONI_REVISION=unknown
 ENV APP_VERSION=${REPPERONI_VERSION} \

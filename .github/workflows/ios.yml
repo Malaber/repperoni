@@ -1,0 +1,45 @@
+name: iOS E2E
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-e2e:
+    runs-on: macos-26
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iPhone, iPad]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: .codex/setup.sh
+      - run: .venv/bin/inv install-ios-tools
+      - name: Select available simulator
+        id: simulator
+        run: .venv/bin/inv select-ios-simulator --family='${{ matrix.device }}'
+      - name: Boot simulator before app launch
+        run: .venv/bin/inv boot-ios-simulator --device='${{ steps.simulator.outputs.id }}'
+      - name: Test native workout against real API
+        run: .venv/bin/inv check-ios-ui --destination='platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ios-e2e-${{ matrix.device }}
+          path: |
+            ios/RepperoniIOS/DerivedData/Logs/Test/*.xcresult
+            .tmp/repperoni.log
+          include-hidden-files: true
+          retention-days: 7
