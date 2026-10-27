@@ -36,6 +36,10 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            127.0.0.1:
+              NSExceptionAllowsInsecureHTTPLoads: true
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleURLTypes:

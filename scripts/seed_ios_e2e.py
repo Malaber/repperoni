@@ -25,7 +25,7 @@ async def main():
         session = AuthSession(user_id=user.id, last_seen_at=now, expires_at=now + timedelta(hours=1))
         db.add(session)
         await db.commit()
-        fixture = {"token": create_access_token(user.id, session.id), "server": "http://localhost:8017"}
+        fixture = {"token": create_access_token(user.id, session.id), "server": "http://127.0.0.1:8017"}
         path = ROOT / "ios/RepperoniIOS/UITests/Fixture.json"
         path.write_text(json.dumps(fixture))
 

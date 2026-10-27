@@ -36,5 +36,8 @@ jobs:
         if: always()
         with:
           name: ios-e2e-${{ matrix.device }}
-          path: ios/RepperoniIOS/DerivedData/Logs/Test/*.xcresult
+          path: |
+            ios/RepperoniIOS/DerivedData/Logs/Test/*.xcresult
+            .tmp/repperoni.log
+          include-hidden-files: true
           retention-days: 7
