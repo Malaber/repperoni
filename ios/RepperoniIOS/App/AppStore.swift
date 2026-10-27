@@ -62,8 +62,7 @@ final class AppStore {
     workout = try await api.get("workouts/active")
     exercises = try await api.get("exercises")
     stats = try await api.get("stats/overview?days=30")
-    let page: History = try await api.get("workouts")
-    history = page.items
+    history = try await api.get("workouts")
   }
   func start() async {
     await perform {

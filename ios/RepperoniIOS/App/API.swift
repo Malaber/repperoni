@@ -85,10 +85,6 @@ struct WorkoutSummary: Decodable, Identifiable {
   let totalSets: Int
   let totalVolumeKg: String
 }
-struct History: Decodable {
-  let items: [WorkoutSummary]
-  let nextCursor: String?
-}
 struct VolumePoint: Decodable, Identifiable {
   var id: String { date }
   let date: String
