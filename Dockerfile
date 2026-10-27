@@ -49,6 +49,11 @@ USER 10001:10001
 RUN python -m pytest
 
 FROM base AS production
+USER root
+# Dependencies are installed at build time; omit pip and its bundled installer wheels.
+RUN python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.14/ensurepip
+USER 10001:10001
 ARG REPPERONI_VERSION=0.0.0
 ARG REPPERONI_REVISION=unknown
 ENV APP_VERSION=${REPPERONI_VERSION} \
