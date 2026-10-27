@@ -661,3 +661,10 @@ def install_ios_tools(c):
 def update_js_audit(c):
     """Apply compatible npm security updates to the package lock."""
     c.run("npm audit fix")
+
+
+@task
+def inspect_python_image(c):
+    """Pull the current Python base image and show its registry digest."""
+    c.run("docker pull python:3.14-slim")
+    c.run("docker image inspect python:3.14-slim --format '{{json .RepoDigests}}'")

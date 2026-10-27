@@ -38,7 +38,8 @@ final class RepperoniUITests: XCTestCase {
     app.buttons["Finish workout"].tap()
     app.buttons["Finish and save"].tap()
     XCTAssertTrue(app.buttons["Start workout"].waitForExistence(timeout: 15))
-    app.tabBars.buttons["Progress"].tap()
+    // iPad uses a floating tab control outside XCUIElementTypeTabBar.
+    app.buttons["Progress"].firstMatch.tap()
     XCTAssertTrue(app.staticTexts["Sets served"].waitForExistence(timeout: 10))
     XCTAssertTrue(app.staticTexts["Bench Press"].exists)
     let progress = XCTAttachment(screenshot: app.screenshot())
