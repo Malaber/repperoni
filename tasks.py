@@ -655,3 +655,9 @@ def install_ios_tools(c):
     """Install XcodeGen from Homebrew when missing."""
     if not shutil.which("xcodegen"):
         c.run("brew install xcodegen")
+
+
+@task
+def update_js_audit(c):
+    """Apply compatible npm security updates to the package lock."""
+    c.run("npm audit fix")

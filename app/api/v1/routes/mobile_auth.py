@@ -97,6 +97,6 @@ async def exchange(
     response.headers["Cache-Control"] = "no-store"
     return {
         "access_token": create_access_token(user.id, session_id=session.id),
-        "token_type": "bearer",  # nosec B105: public OAuth token type, not a credential
+        "token_type": "bearer",  # nosec B105
         "user_id": str(user.id),
     }
