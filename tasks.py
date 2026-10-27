@@ -252,13 +252,15 @@ def bootstrap_ci(c):
 
 
 @task
-def lock_deps(c):
+def lock_deps(c, upgrade_package=""):
     """Regenerate hash-locked bootstrap, production, and development dependencies."""
     environment = {
         **_clean_install_env(),
         "CUSTOM_COMPILE_COMMAND": ".venv/bin/inv lock-deps",
     }
     common = "--quiet --generate-hashes --allow-unsafe --strip-extras --newline=lf"
+    if upgrade_package:
+        common += f" --upgrade-package {shlex.quote(upgrade_package)}"
     c.run(
         f"{_bin('pip-compile')} {common} --output-file=requirements-bootstrap.lock "
         "requirements-bootstrap.in",
@@ -541,9 +543,25 @@ def compute_version(_, ref_name="", run_number=""):
 IOS_ROOT = ROOT / "ios" / "RepperoniIOS"
 
 
+def _ios_release_version(tags: list[str], head_tags: list[str]) -> str:
+    stable = [tag for tag in head_tags if STABLE_TAG_PATTERN.fullmatch(tag)]
+    if stable:
+        return _latest_stable_version(stable)
+    return _version_values("main", 1, tags)["base_version"]
+
+
+def _current_ios_version() -> str:
+    return _ios_release_version(
+        _git_lines("tag", "--list", "v*"), _git_lines("tag", "--points-at", "HEAD")
+    )
+
+
 @task
 def generate_ios_project(c):
-    """Generate the native iOS project from its checked-in specification."""
+    """Generate the native iOS project using the automatic release version."""
+    (IOS_ROOT / "Version.xcconfig").write_text(
+        f"MARKETING_VERSION = {_current_ios_version()}\n", encoding="utf-8"
+    )
     c.run(f"xcodegen generate --spec {shlex.quote(str(IOS_ROOT / 'project.yml'))}")
 
 
@@ -581,8 +599,11 @@ def check_ios_ui(c, destination=""):
 
 
 @task
-def upload_ios_testflight(c, version="1.0.0", build_number="1"):
-    """Archive and upload to TestFlight using CLI signing or an ASC API key."""
+def upload_ios_testflight(c, version="", build_number="1"):
+    """Archive and upload the current automatic release version to TestFlight."""
+    c.run("git fetch origin --tags")
+    version = version or _current_ios_version()
+    generate_ios_project.body(c)
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("version must be major.minor.patch")
     if not re.fullmatch(r"[1-9]\d*", build_number):

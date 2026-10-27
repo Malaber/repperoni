@@ -64,8 +64,14 @@ permissions. Keep keys outside this repository. A signing certificate/private ke
 must be available to Xcode, or cloud-managed signing must be permitted.
 
 ```sh
-.venv/bin/inv upload-ios-testflight --version=1.0.0 --build-number=1
+.venv/bin/inv upload-ios-testflight --build-number=1
 ```
+
+The upload target fetches Git tags and uses the stable tag at HEAD, or the next
+automatic release version (0.1.1 before the first release), matching Tracy.
+The existing GitHub release workflow publishes stable patch releases automatically
+after the protected production pipeline succeeds. An explicit `--version` remains
+available for deliberate overrides.
 
 The script generates the project, archives Release for devices, signs using
 provisioning updates, and exports directly to App Store Connect. Use a new build

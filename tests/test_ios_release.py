@@ -37,3 +37,18 @@ def test_cli_archive_and_upload_arguments(tmp_path, api_key):
     assert "PRODUCT_BUNDLE_IDENTIFIER=de.malaber.repperoni" in arguments
     assert arguments.count("-allowProvisioningUpdates") == 2
     assert arguments.count("-authenticationKeyPath") == (2 if api_key else 0)
+
+
+@pytest.mark.parametrize(
+    ("tags", "head_tags", "expected"),
+    [
+        ([], [], "0.1.1"),
+        (["v0.1.1", "v0.1.2-rc.3"], [], "0.1.2"),
+        (["v0.1.1", "v0.2.0"], ["v0.1.1"], "0.1.1"),
+        (["v0.2.9", "v0.2.10"], [], "0.2.11"),
+    ],
+)
+def test_ios_version_matches_release_policy(tags, head_tags, expected):
+    from tasks import _ios_release_version
+
+    assert _ios_release_version(tags, head_tags) == expected
