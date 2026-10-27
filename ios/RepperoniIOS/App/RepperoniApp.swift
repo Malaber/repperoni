@@ -132,7 +132,10 @@ struct TrainingView: View {
                     .foregroundStyle(.secondary)
                 }.padding(.vertical, 8)
               }.disabled(store.busy)
-            }.searchable(text: $search, prompt: "Find an exercise").navigationTitle(
+            }.searchable(
+              text: $search, placement: .navigationBarDrawer(displayMode: .always),
+              prompt: "Find an exercise"
+            ).navigationTitle(
               "Choose your topping"
             )
             .toolbar { Button("Done") { choosing = false } }
