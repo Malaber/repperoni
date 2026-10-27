@@ -13,7 +13,12 @@ final class RepperoniUITests: XCTestCase {
     app.launchEnvironment["REPPERONI_TEST_SERVER"] = fixture["server"]
     app.launch()
     XCTAssertTrue(app.buttons["Start workout"].waitForExistence(timeout: 20))
-    app.buttons["Start workout"].tap()
+    let start = app.buttons["Start workout"]
+    let ready = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true AND hittable == true"), object: start)
+    XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 60), .completed)
+    XCTAssertFalse(app.alerts.firstMatch.exists, app.alerts.debugDescription)
+    start.tap()
     XCTAssertTrue(app.buttons["Add exercise"].waitForExistence(timeout: 15))
     app.buttons["Add exercise"].tap()
     let search = app.searchFields.firstMatch

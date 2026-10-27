@@ -668,3 +668,10 @@ def inspect_python_image(c):
     """Pull the current Python base image and show its registry digest."""
     c.run("docker pull python:3.14-slim")
     c.run("docker image inspect python:3.14-slim --format '{{json .RepoDigests}}'")
+
+
+@task
+def boot_ios_simulator(c, device):
+    """Wait for a selected simulator to finish booting before XCTest launches."""
+    c.run(f"xcrun simctl boot {shlex.quote(device)}", warn=True)
+    c.run(f"xcrun simctl bootstatus {shlex.quote(device)} -b")
